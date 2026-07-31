@@ -1371,6 +1371,11 @@ class LabelDialog(QtWidgets.QDialog):
         )
         self.add_linking_button = QtWidgets.QPushButton(self.tr("Add"))
         self.add_linking_button.setFixedHeight(control_height)
+        self.add_linking_button.setAutoDefault(False)
+        self.add_linking_button.setEnabled(False)
+        self.linking_input.textChanged.connect(
+            lambda text: self.add_linking_button.setEnabled(bool(text.strip()))
+        )
         self.add_linking_button.clicked.connect(self.add_linking_pair)
 
         layout = QtWidgets.QVBoxLayout()
@@ -1470,7 +1475,11 @@ class LabelDialog(QtWidgets.QDialog):
         self._last_gid = None
 
     def add_linking_pair(self):
-        linking_text = self.linking_input.text()
+        linking_text = self.linking_input.text().strip()
+        if not linking_text:
+            self.linking_input.setFocus()
+            return
+
         try:
             linking_pairs = ast.literal_eval(linking_text)
             if (
@@ -1484,18 +1493,20 @@ class LabelDialog(QtWidgets.QDialog):
                         self.tr("Duplicate Entry"),
                         self.tr("This linking pair already exists."),
                     )
+                    self.linking_input.setFocus()
                     return
                 item = QtWidgets.QListWidgetItem(str(linking_pairs))
                 item.setData(Qt.ItemDataRole.UserRole, linking_pairs)
                 self.linking_list.addItem(item)
                 self.linking_input.clear()
+                self.linking_input.setFocus()
                 self.linking_list.setHidden(
                     False
                 )  # Show the list when an item is added
             else:
                 raise ValueError
-        except Exception as e:
-            logger.error(f"An Error occurred while adding linking pair: {e}")
+        except (SyntaxError, ValueError):
+            logger.warning("Rejected invalid KIE linking pair input.")
             QtWidgets.QMessageBox.warning(
                 self,
                 self.tr("Invalid Input"),
@@ -1503,6 +1514,7 @@ class LabelDialog(QtWidgets.QDialog):
                     "Please enter a valid list of linking pairs like [1,2]."
                 ),
             )
+            self.linking_input.setFocus()
 
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key.Key_Delete:

@@ -85,6 +85,29 @@ class TestKieLinking(unittest.TestCase):
         )
         self.assertEqual(self.dialog.get_kie_linking(), [[3, 4]])
 
+    def test_dialog_ignores_empty_linking_input(self):
+        self.dialog.linking_input.clear()
+
+        with patch.object(
+            QtWidgets.QMessageBox, "warning"
+        ) as warning, patch(
+            "anylabeling.views.labeling.widgets.label_dialog.logger.error"
+        ) as error:
+            self.dialog.add_linking_pair()
+
+        warning.assert_not_called()
+        error.assert_not_called()
+        self.assertEqual(self.dialog.linking_list.count(), 0)
+
+    def test_dialog_disables_add_button_without_linking_input(self):
+        self.assertFalse(self.dialog.add_linking_button.isEnabled())
+
+        self.dialog.linking_input.setText("[1, 2]")
+        self.assertTrue(self.dialog.add_linking_button.isEnabled())
+
+        self.dialog.linking_input.setText("   ")
+        self.assertFalse(self.dialog.add_linking_button.isEnabled())
+
     def test_dialog_rejects_boolean_linking_values(self):
         self.dialog.linking_input.setText("[True, 2]")
 
