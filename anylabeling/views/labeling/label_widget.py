@@ -79,6 +79,9 @@ from .widgets import (
     CrosshairSettingsDialog,
     FileDialogPreview,
     PPOCRDialog,
+    PlaybackControlBar,
+    next_loop_index,
+    symmetric_loop_bounds,
     VideoClassifierDialog,
     ShapeModifyDialog,
     GroupIDFilterComboBox,
@@ -104,6 +107,26 @@ CHECKED_FIELD = "checked"
 FILE_CHECKED_COLOR = "#22A06B"
 FILE_UNCHECKED_COLOR = "#8C98A4"
 CHECKED_FIELD_PATTERN = re.compile(r'"checked"\s*:\s*(true|false)')
+
+
+def _select_filtered_file(all_files, filtered_files, current_file):
+    """Choose the nearest visible file while preserving sequence order."""
+    if not filtered_files:
+        return None
+    if current_file in filtered_files:
+        return current_file
+    if current_file not in all_files:
+        return filtered_files[0]
+
+    current_index = all_files.index(current_file)
+    filtered_set = set(filtered_files)
+    for filename in all_files[current_index + 1 :]:
+        if filename in filtered_set:
+            return filename
+    for filename in reversed(all_files[:current_index]):
+        if filename in filtered_set:
+            return filename
+    return filtered_files[0]
 
 
 def _measure_text_width(font_metrics, text):
@@ -148,6 +171,8 @@ class LabelingWidget(LabelDialog):
     """The main widget for labeling images"""
 
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
+    PLAYBACK_SEQUENCE = "sequence"
+    PLAYBACK_LOOP = "loop"
     next_files_changed = QtCore.pyqtSignal(list)
 
     def __init__(  # noqa: C901
@@ -228,6 +253,18 @@ class LabelingWidget(LabelDialog):
 
         # Whether we need to save or not.
         self.dirty = False
+
+        self.playback_timer = QtCore.QTimer(self)
+        self.playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.playback_timer.timeout.connect(self._on_playback_tick)
+        self._playback_mode = None
+        self._playback_anchor_index = None
+        self._playback_display_index = None
+        self._playback_internal_change = False
+        self._playback_fps = 30
+        self._playback_loop_radius = 3
+        self._playback_preview_cache = {}
+        self._playback_anchor_pixmap = None
 
         self._no_selection_slot = False
         self._copied_shapes = None
@@ -337,6 +374,21 @@ class LabelingWidget(LabelDialog):
         )
         self.file_search.returnPressed.connect(self.file_search_changed)
         self.file_search.returnPressed.connect(self.file_search.setFocus)
+        self.annotated_only_checkbox = QCheckBox(
+            self.tr("Only annotated")
+        )
+        self.annotated_only_checkbox.setObjectName("AnnotatedOnlyFilter")
+        self.annotated_only_checkbox.setChecked(False)
+        self.annotated_only_checkbox.setEnabled(False)
+        self.annotated_only_checkbox.setStyleSheet(
+            get_checkbox_indicator_style()
+        )
+        self.annotated_only_checkbox.setToolTip(
+            self.tr("Show only frames that have a matching JSON label file")
+        )
+        self.annotated_only_checkbox.toggled.connect(
+            self.annotated_filter_changed
+        )
         self.settings_button = QPushButton(self)
         self.settings_button.setFixedSize(32, 32)
         self.settings_button.setCursor(
@@ -541,10 +593,17 @@ class LabelingWidget(LabelDialog):
         )
         openvideo = action(
             self.tr("Open Video"),
-            lambda: utils.open_video_file(self),
+            self.open_video_media,
             shortcuts["open_video"],
             "video",
             self.tr("Open video file"),
+        )
+        opendicom = action(
+            self.tr("Open DICOM / RUN"),
+            self.open_dicom_media,
+            None,
+            "video",
+            self.tr("Open a DICOM cine or DICOM-compatible RUN file"),
         )
         opendir = action(
             self.tr("Open Dir"),
@@ -1761,6 +1820,7 @@ class LabelingWidget(LabelDialog):
             save_as=save_as,
             open=open_,
             open_video=openvideo,
+            open_dicom=opendicom,
             open_dir=opendir,
             close=close,
             toggle_compare_view=toggle_compare_view,
@@ -1889,6 +1949,7 @@ class LabelingWidget(LabelDialog):
             file_menu_actions=(
                 open_,
                 openvideo,
+                opendicom,
                 opendir,
                 save,
                 save_as,
@@ -2030,6 +2091,7 @@ class LabelingWidget(LabelDialog):
                 open_prev_unchecked_image,
                 opendir,
                 openvideo,
+                opendicom,
                 toggle_compare_view,
                 self.menus.recent_files,
                 save,
@@ -2320,10 +2382,23 @@ class LabelingWidget(LabelDialog):
         #     lambda: self.inform_next_files(self.filename)
         # )
         self.auto_labeling_widget.hide()  # Hide by default
+        self.playback_control = PlaybackControlBar(self)
+        self.playback_control.step_requested.connect(self._playback_step)
+        self.playback_control.seek_requested.connect(self._playback_seek)
+        self.playback_control.playback_state_requested.connect(
+            self.toggle_sequence_playback
+        )
+        self.playback_control.loop_requested.connect(self.toggle_loop_playback)
+        self.playback_control.fps_changed.connect(self.set_playback_fps)
+        self.playback_control.loop_radius_changed.connect(
+            self._set_playback_loop_radius
+        )
+        self.playback_control.set_fps(self._playback_fps)
         central_layout.addWidget(self.label_instruction)
         central_layout.addSpacing(5)
         central_layout.addWidget(self.auto_labeling_widget)
         central_layout.addWidget(scroll_area)
+        central_layout.addWidget(self.playback_control)
         central_layout.addWidget(self.compare_view_slider)
         layout.addLayout(central_layout)
 
@@ -2475,6 +2550,11 @@ class LabelingWidget(LabelDialog):
         files_panel_layout = QVBoxLayout(files_panel)
         files_panel_layout.setContentsMargins(0, 0, 0, 0)
         files_panel_layout.setSpacing(0)
+        file_filter_layout = QHBoxLayout()
+        file_filter_layout.setContentsMargins(6, 2, 6, 2)
+        file_filter_layout.addWidget(self.annotated_only_checkbox)
+        file_filter_layout.addStretch()
+        files_panel_layout.addLayout(file_filter_layout)
         files_panel_layout.addWidget(self.file_dock)
         right_sidebar_layout.addWidget(files_panel)
         self.file_dock.setFeatures(
@@ -2544,7 +2624,10 @@ class LabelingWidget(LabelDialog):
         # Restore application settings.
         self.settings = QtCore.QSettings("anylabeling", "anylabeling")
         self.recent_files = self.settings.value("recent_files", []) or []
-        self.last_open_dir = self.settings.value("last_open_dir", None) or None
+        if not self.last_open_dir:
+            self.last_open_dir = (
+                self.settings.value("last_open_dir", None) or None
+            )
 
         # Populate the File menu dynamically.
         self.update_file_menu()
@@ -2878,6 +2961,14 @@ class LabelingWidget(LabelDialog):
         utils.add_actions(self.menus.edit, actions + self.actions.editMenu)
 
     def set_dirty(self):
+        if (
+            self._playback_mode == self.PLAYBACK_SEQUENCE
+            and not self._playback_internal_change
+        ):
+            self._stop_playback()
+            self.status(
+                self.tr("Playback paused while annotations are edited"), 3000
+            )
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
 
@@ -2980,6 +3071,11 @@ class LabelingWidget(LabelDialog):
         self.statusBar().showMessage(message, delay)
 
     def reset_state(self):
+        if (
+            self._playback_mode is not None
+            and not self._playback_internal_change
+        ):
+            self._stop_playback()
         self._reset_label_loop()
         self.select_loop_count = -1
         self.label_list.clear()
@@ -3833,6 +3929,15 @@ class LabelingWidget(LabelDialog):
     def _file_item_annotation_checked(self, item):
         return item.data(Qt.ItemDataRole.UserRole) is True
 
+    def _label_file_for_image(self, filename):
+        label_file = osp.splitext(filename)[0] + LabelFile.suffix
+        if self.output_dir:
+            label_file = osp.join(
+                self.output_dir,
+                osp.basename(label_file),
+            )
+        return label_file
+
     def _create_file_list_item(self, file, label_file):
         item = QtWidgets.QListWidgetItem(file)
         flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -4174,18 +4279,40 @@ class LabelingWidget(LabelDialog):
         self.update_attributes(selected_idx)
 
     def file_search_changed(self):
-        search_text = self.file_search.text()
+        if not self.last_open_dir:
+            return
         self.import_image_folder(
             self.last_open_dir,
-            pattern=search_text,
-            load=False,
+            pattern=self.file_search.text(),
+            load=True,
+            preserve_current=True,
         )
+
+    def annotated_filter_changed(self, checked):
+        if not self.last_open_dir:
+            return
+        refreshed = self.import_image_folder(
+            self.last_open_dir,
+            pattern=self.file_search.text(),
+            load=True,
+            preserve_current=True,
+        )
+        if refreshed:
+            return
+        with QtCore.QSignalBlocker(self.annotated_only_checkbox):
+            self.annotated_only_checkbox.setChecked(not checked)
 
     def file_selection_changed(self):
         items = self.file_list_widget.selectedItems()
         if not items:
             return
         item = items[0]
+
+        if (
+            self._playback_mode is not None
+            and not self._playback_internal_change
+        ):
+            self._stop_playback()
 
         if not self.may_continue():
             return
@@ -5154,6 +5281,12 @@ class LabelingWidget(LabelDialog):
             return
         if self.canvas.is_brush_mode:
             return
+        can_select_during_loop = (
+            self._playback_mode == self.PLAYBACK_LOOP
+            and self.canvas.current is None
+        )
+        if can_select_during_loop and not self.canvas.editing():
+            self.set_edit_mode()
         if self.canvas.editing():
             selected_shapes = []
             for item in self.label_list.selected_items():
@@ -5858,8 +5991,9 @@ class LabelingWidget(LabelDialog):
                 self.status(self.tr("Error reading %s") % label_file)
                 return False
             self.image_data = self.label_file.image_data
+            image_path_dir = image_dir or osp.dirname(label_file)
             self.image_path = osp.join(
-                osp.dirname(label_file),
+                image_path_dir,
                 self.label_file.image_path,
             )
             self.other_data = self.label_file.other_data
@@ -6005,6 +6139,7 @@ class LabelingWidget(LabelDialog):
         if self.compare_view_manager.is_active():
             self.compare_view_manager.load_compare_for_file(self.filename)
 
+        self._sync_playback_control()
         return True
 
     # QT Overload
@@ -6068,6 +6203,8 @@ class LabelingWidget(LabelDialog):
     def closeEvent(self, event):
         if not self.may_continue():
             event.ignore()
+        elif self._playback_mode is not None:
+            self._stop_playback()
         if event.isAccepted() and hasattr(self, "video_classifier_window"):
             if self.video_classifier_window is not None:
                 self.video_classifier_window.close()
@@ -6130,14 +6267,398 @@ class LabelingWidget(LabelDialog):
         items = [i.toLocalFile() for i in event.mimeData().urls()]
         self.import_dropped_image_files(items)
 
+    def _current_playback_index(self):
+        if (
+            self._playback_mode == self.PLAYBACK_LOOP
+            and self._playback_display_index is not None
+        ):
+            return self._playback_display_index
+        filename = str(self.filename) if self.filename is not None else None
+        if filename in self.fn_to_index:
+            return self.fn_to_index[filename]
+        row = self.file_list_widget.currentRow()
+        if 0 <= row < len(self.image_list):
+            return row
+        return 0
+
+    def _sync_playback_control(self, frame_index=None):
+        if not hasattr(self, "playback_control"):
+            return
+        total = len(self.image_list)
+        self.playback_control.set_total_frames(total)
+        if frame_index is None:
+            frame_index = self._current_playback_index()
+        self.playback_control.set_current_frame(frame_index)
+        self.playback_control.set_playback_state(
+            self.playback_timer.isActive()
+            and self._playback_mode is not None
+        )
+        self.playback_control.set_loop_state(
+            self._playback_mode == self.PLAYBACK_LOOP
+            and self.playback_timer.isActive()
+        )
+
+    def set_playback_fps(self, fps):
+        try:
+            fps = int(round(float(fps)))
+        except (TypeError, ValueError):
+            return
+        self._playback_fps = min(max(1, fps), 120)
+        self.playback_timer.setInterval(
+            max(1, int(round(1000 / self._playback_fps)))
+        )
+        if hasattr(self, "playback_control"):
+            self.playback_control.set_fps(self._playback_fps)
+
+    def _set_playback_loop_radius(self, radius):
+        self._playback_loop_radius = max(0, int(radius))
+        if self._playback_mode != self.PLAYBACK_LOOP:
+            return
+        start, end = symmetric_loop_bounds(
+            self._playback_anchor_index,
+            len(self.image_list),
+            self._playback_loop_radius,
+        )
+        if not start <= self._playback_display_index <= end:
+            self._show_loop_preview(self._playback_anchor_index)
+
+    def _confirm_playback_frame_change(self):
+        if not self.dirty:
+            return True
+        if not self.may_continue():
+            return False
+        if not self.dirty:
+            return True
+
+        # ``may_continue`` leaves Discard dirty until a caller actually
+        # changes documents. Playback can start without changing immediately,
+        # so restore the saved anchor now to make the discard real.
+        filename = self.filename
+        keep_previous = self._config["keep_prev"]
+        self._config["keep_prev"] = False
+        try:
+            self.set_clean()
+            loaded = bool(filename and self.load_file(filename))
+            return loaded and not self.dirty
+        finally:
+            self._config["keep_prev"] = keep_previous
+
+    def _playback_available(self):
+        if len(self.image_list) < 2 or self.filename is None:
+            self.status(self.tr("Open a multi-frame sequence first"), 3000)
+            return False
+        if str(self.filename) not in self.fn_to_index:
+            self.status(
+                self.tr("The current frame is outside the active sequence"),
+                3000,
+            )
+            return False
+        if self.image_path is None or osp.normcase(
+            osp.abspath(str(self.image_path))
+        ) != osp.normcase(osp.abspath(str(self.filename))):
+            self.status(self.tr("Load a frame before starting playback"), 3000)
+            return False
+        if self.compare_view_manager.is_active():
+            self.status(
+                self.tr("Close Compare View before starting playback"), 3000
+            )
+            return False
+        return True
+
+    def toggle_sequence_playback(self, should_play=None):
+        playback_active = (
+            self._playback_mode is not None
+            or self.playback_timer.isActive()
+        )
+        if should_play is None:
+            should_play = not playback_active
+
+        if not should_play:
+            self._stop_playback()
+            return
+
+        if playback_active:
+            self._sync_playback_control()
+            return
+        if not self._playback_available():
+            self._sync_playback_control()
+            return
+        if self.canvas.current is not None or self.canvas.is_brush_mode:
+            self.status(
+                self.tr(
+                    "Finish the current annotation before normal playback"
+                ),
+                3000,
+            )
+            self._sync_playback_control()
+            return
+        if not self._confirm_playback_frame_change():
+            self._sync_playback_control()
+            return
+
+        current_index = self.fn_to_index.get(
+            str(self.filename), self.file_list_widget.currentRow()
+        )
+        if current_index >= len(self.image_list) - 1:
+            if not self._load_playback_frame(0, for_sequence=True):
+                self._sync_playback_control()
+                return
+            current_index = 0
+
+        self._playback_mode = self.PLAYBACK_SEQUENCE
+        self._playback_display_index = current_index
+        self.canvas.setEnabled(False)
+        self.playback_timer.start(
+            max(1, int(round(1000 / self._playback_fps)))
+        )
+        self._sync_playback_control(current_index)
+        self.status(self.tr("Playing frame sequence"))
+
+    def toggle_loop_playback(self):
+        if self._playback_mode == self.PLAYBACK_LOOP:
+            self._stop_playback()
+            return
+        if self._playback_mode is not None:
+            self._stop_playback()
+        if not self._playback_available():
+            self._sync_playback_control()
+            return
+
+        anchor_index = self.fn_to_index.get(str(self.filename))
+        if anchor_index is None:
+            self._sync_playback_control()
+            return
+
+        self._playback_mode = self.PLAYBACK_LOOP
+        self._playback_anchor_index = anchor_index
+        self._playback_display_index = anchor_index
+        self._playback_anchor_pixmap = QtGui.QPixmap(self.canvas.pixmap)
+        self._playback_preview_cache = {
+            anchor_index: self._playback_anchor_pixmap
+        }
+        self.playback_timer.start(
+            max(1, int(round(1000 / self._playback_fps)))
+        )
+        self._sync_playback_control(anchor_index)
+        start, end = symmetric_loop_bounds(
+            anchor_index,
+            len(self.image_list),
+            self._playback_loop_radius,
+        )
+        self.status(
+            self.tr(
+                "Looping frames {start}–{end} around frame {anchor}"
+            ).format(
+                start=start + 1,
+                end=end + 1,
+                anchor=anchor_index + 1,
+            )
+        )
+
+    def _stop_playback(self, restore_anchor=True):
+        previous_mode = self._playback_mode
+        anchor_index = self._playback_anchor_index
+        self.playback_timer.stop()
+
+        if (
+            previous_mode == self.PLAYBACK_LOOP
+            and restore_anchor
+            and self._playback_anchor_pixmap is not None
+        ):
+            self.canvas.set_preview_pixmap(self._playback_anchor_pixmap)
+            self._playback_display_index = anchor_index
+
+        self._playback_mode = None
+        self._playback_anchor_index = None
+        self._playback_display_index = None
+        self._playback_preview_cache = {}
+        self._playback_anchor_pixmap = None
+        if previous_mode == self.PLAYBACK_SEQUENCE:
+            self.canvas.setEnabled(self.filename is not None)
+        self._sync_playback_control(
+            anchor_index
+            if previous_mode == self.PLAYBACK_LOOP and anchor_index is not None
+            else None
+        )
+
+    def _on_playback_tick(self):
+        blocking_widget = (
+            QtWidgets.QApplication.activeModalWidget()
+            or QtWidgets.QApplication.activePopupWidget()
+        )
+        if self._playback_mode is not None and blocking_widget is not None:
+            self._stop_playback()
+            self.status(
+                self.tr("Playback paused while a dialog or menu is open"),
+                3000,
+            )
+            return
+
+        if self._playback_mode == self.PLAYBACK_SEQUENCE:
+            if self.dirty and not self._playback_internal_change:
+                self._stop_playback()
+                self.status(
+                    self.tr("Playback paused to preserve unsaved annotations"),
+                    3000,
+                )
+                return
+            current_index = self.fn_to_index.get(str(self.filename), -1)
+            next_index = current_index + 1
+            if next_index >= len(self.image_list):
+                self._stop_playback()
+                self.status(self.tr("Playback finished"), 2000)
+                return
+            if not self._load_playback_frame(next_index, for_sequence=True):
+                self._stop_playback()
+            return
+
+        if self._playback_mode == self.PLAYBACK_LOOP:
+            start, end = symmetric_loop_bounds(
+                self._playback_anchor_index,
+                len(self.image_list),
+                self._playback_loop_radius,
+            )
+            next_index = next_loop_index(
+                self._playback_display_index, start, end
+            )
+            self._show_loop_preview(next_index)
+
+    def _load_playback_frame(self, frame_index, *, for_sequence=False):
+        if not 0 <= frame_index < len(self.image_list):
+            return False
+        filename = self.image_list[frame_index]
+        keep_previous = self._config["keep_prev"]
+        self._playback_internal_change = True
+        if for_sequence:
+            self._config["keep_prev"] = False
+        try:
+            with QtCore.QSignalBlocker(self.file_list_widget):
+                self.file_list_widget.setCurrentRow(frame_index)
+            loaded = self.load_file(filename)
+        finally:
+            self._config["keep_prev"] = keep_previous
+            self._playback_internal_change = False
+        if loaded:
+            self._playback_display_index = frame_index
+            if self._playback_mode == self.PLAYBACK_SEQUENCE:
+                self.canvas.setEnabled(False)
+            self._sync_playback_control(frame_index)
+        return bool(loaded)
+
+    def _show_loop_preview(self, frame_index):
+        if self._playback_mode != self.PLAYBACK_LOOP:
+            return False
+        if not 0 <= frame_index < len(self.image_list):
+            return False
+
+        pixmap = self._playback_preview_cache.get(frame_index)
+        if pixmap is None:
+            frame_path = self.image_list[frame_index]
+            image_data = LabelFile.load_image_file(frame_path)
+            try:
+                image = utils.img_data_to_qimage(image_data, frame_path)
+            except Exception as error:
+                logger.error(
+                    f"Failed to decode playback frame {frame_path}: {error}"
+                )
+                image = QtGui.QImage()
+            if image.isNull():
+                self._stop_playback()
+                self.status(
+                    self.tr("Failed to load a loop preview frame"), 3000
+                )
+                return False
+            pixmap = QtGui.QPixmap.fromImage(image)
+            if (
+                self._playback_anchor_pixmap is not None
+                and pixmap.size() != self._playback_anchor_pixmap.size()
+            ):
+                self._stop_playback()
+                self.status(
+                    self.tr(
+                        "Loop playback stopped because frame sizes differ"
+                    ),
+                    4000,
+                )
+                return False
+
+            if len(self._playback_preview_cache) >= 12:
+                for cached_index in tuple(self._playback_preview_cache):
+                    if cached_index != self._playback_anchor_index:
+                        self._playback_preview_cache.pop(cached_index)
+                        break
+            self._playback_preview_cache[frame_index] = pixmap
+
+        self.canvas.set_preview_pixmap(pixmap)
+        self._playback_display_index = frame_index
+        self._sync_playback_control(frame_index)
+        return True
+
+    def _playback_step(self, offset):
+        if self._playback_mode is not None:
+            self._stop_playback()
+        if not self.image_list or not self._confirm_playback_frame_change():
+            self._sync_playback_control()
+            return
+        current_index = self.fn_to_index.get(
+            str(self.filename), self.file_list_widget.currentRow()
+        )
+        target_index = min(
+            max(0, current_index + int(offset)), len(self.image_list) - 1
+        )
+        if target_index != current_index:
+            self._load_playback_frame(target_index)
+        else:
+            self._sync_playback_control(current_index)
+
+    def _playback_seek(self, frame_index):
+        if self._playback_mode is not None:
+            self._stop_playback()
+        if not self.image_list or not self._confirm_playback_frame_change():
+            self._sync_playback_control()
+            return
+        frame_index = min(max(0, int(frame_index)), len(self.image_list) - 1)
+        current_index = self.fn_to_index.get(
+            str(self.filename), self.file_list_widget.currentRow()
+        )
+        if frame_index != current_index:
+            self._load_playback_frame(frame_index)
+        else:
+            self._sync_playback_control(current_index)
+
+    def open_video_media(self):
+        if self._playback_mode is not None:
+            self._stop_playback()
+        with QtCore.QSignalBlocker(self.annotated_only_checkbox):
+            self.annotated_only_checkbox.setChecked(False)
+        utils.open_video_file(self)
+
+    def open_dicom_media(self):
+        if self._playback_mode is not None:
+            self._stop_playback()
+        with QtCore.QSignalBlocker(self.annotated_only_checkbox):
+            self.annotated_only_checkbox.setChecked(False)
+        utils.open_dicom_file(self)
+
     def load_recent(self, filename):
-        if self.may_continue():
-            self.load_file(filename)
+        if not self.may_continue():
+            return
+        if self._playback_mode is not None:
+            self._stop_playback()
+        self.file_list_widget.clear()
+        self.fn_to_index.clear()
+        with QtCore.QSignalBlocker(self.annotated_only_checkbox):
+            self.annotated_only_checkbox.setChecked(False)
+        self.annotated_only_checkbox.setEnabled(False)
+        self.playback_control.set_total_frames(0)
+        self.load_file(filename)
 
     def load_recent_dir(self, dirpath):
         self.import_image_folder(dirpath)
 
     def open_prev_unchecked_image(self):
+        if self._playback_mode is not None:
+            self._stop_playback()
         if (
             not self.may_continue()
             or len(self.image_list) <= 0
@@ -6156,6 +6677,8 @@ class LabelingWidget(LabelDialog):
                 break
 
     def open_next_unchecked_image(self, _value=False):
+        if self._playback_mode is not None:
+            self._stop_playback()
         if (
             not self.may_continue()
             or len(self.image_list) <= 0
@@ -6174,6 +6697,8 @@ class LabelingWidget(LabelDialog):
                 break
 
     def open_prev_image(self, _value=False):
+        if self._playback_mode is not None:
+            self._stop_playback()
         if not self.may_continue():
             return
         if self.file_list_widget.count() <= 0:
@@ -6187,6 +6712,11 @@ class LabelingWidget(LabelDialog):
                 self.load_file(filename)
 
     def open_next_image(self, _value=False, load=True):
+        if (
+            self._playback_mode is not None
+            and not self._playback_internal_change
+        ):
+            self._stop_playback()
         if not self.may_continue():
             return
         count = self.file_list_widget.count()
@@ -6209,6 +6739,8 @@ class LabelingWidget(LabelDialog):
     def open_file(self, _value=False):
         if not self.may_continue():
             return
+        if self._playback_mode is not None:
+            self._stop_playback()
         path = osp.dirname(str(self.filename)) if self.filename else "."
         formats = [f"*{ext}" for ext in utils.get_supported_image_extensions()]
         filters = self.tr("Image & Label files (%s)") % " ".join(
@@ -6227,6 +6759,9 @@ class LabelingWidget(LabelDialog):
             if filename:
                 self.file_list_widget.clear()
                 self.fn_to_index.clear()
+                with QtCore.QSignalBlocker(self.annotated_only_checkbox):
+                    self.annotated_only_checkbox.setChecked(False)
+                self.annotated_only_checkbox.setEnabled(False)
                 self.load_file(filename)
 
     def change_output_dir_dialog(self, _value=False):
@@ -6248,23 +6783,35 @@ class LabelingWidget(LabelDialog):
         if not output_dir:
             return
 
+        previous_output_dir = self.output_dir
         self.output_dir = output_dir
+        folder_mode = (
+            self.annotated_only_checkbox.isEnabled()
+            and self.last_open_dir
+            and osp.isdir(self.last_open_dir)
+        )
+        if folder_mode:
+            refreshed = self.import_image_folder(
+                self.last_open_dir,
+                pattern=self.file_search.text(),
+                load=True,
+                preserve_current=True,
+                force_reload=True,
+            )
+        else:
+            refreshed = self.may_continue()
+            if refreshed and self.filename:
+                refreshed = bool(self.load_file(self.filename))
+
+        if not refreshed:
+            self.output_dir = previous_output_dir
+            return
 
         self.statusBar().showMessage(
             self.tr("%s . Annotations will be saved/loaded in %s")
             % ("Change Annotations Dir", self.output_dir)
         )
         self.statusBar().show()
-
-        current_filename = self.filename
-        self.import_image_folder(self.last_open_dir, load=False)
-
-        if current_filename in self.image_list:
-            # retain currently selected file
-            self.file_list_widget.setCurrentRow(
-                self.fn_to_index[str(current_filename)]
-            )
-            self.file_list_widget.repaint()
 
     def save_file(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
@@ -6332,6 +6879,8 @@ class LabelingWidget(LabelDialog):
         self.toggle_actions(False)
         self.canvas.setEnabled(False)
         self.actions.save_as.setEnabled(False)
+        self.annotated_only_checkbox.setEnabled(False)
+        self.playback_control.set_total_frames(0)
 
     def toggle_compare_view(self):
         """Toggle the compare view on or off."""
@@ -6427,8 +6976,23 @@ class LabelingWidget(LabelDialog):
             logger.info(f"Label file is removed: {label_file}")
 
             item = self.file_list_widget.currentItem()
-            item.setCheckState(Qt.CheckState.Unchecked)
-            self._set_file_item_checked(item, False)
+            if item is not None:
+                item.setCheckState(Qt.CheckState.Unchecked)
+                self._set_file_item_checked(item, False)
+
+            if (
+                self.annotated_only_checkbox.isEnabled()
+                and self.last_open_dir
+                and osp.isdir(self.last_open_dir)
+            ):
+                self.import_image_folder(
+                    self.last_open_dir,
+                    pattern=self.file_search.text(),
+                    load=True,
+                    preserve_current=True,
+                    force_reload=True,
+                )
+                return
 
             filename = self.filename
             self.reset_state()
@@ -6541,7 +7105,7 @@ class LabelingWidget(LabelDialog):
             return True
         if answer == mb.StandardButton.Save:
             self.save_file()
-            return True
+            return not self.dirty
         # answer == mb.Cancel
         return False
 
@@ -6622,6 +7186,8 @@ class LabelingWidget(LabelDialog):
     def open_folder_dialog(self, _value=False, dirpath=None):
         if not self.may_continue():
             return
+        if self._playback_mode is not None:
+            self._stop_playback()
 
         default_open_dir_path = dirpath if dirpath else "."
         if self.last_open_dir and osp.exists(self.last_open_dir):
@@ -6651,6 +7217,11 @@ class LabelingWidget(LabelDialog):
         return lst
 
     def import_dropped_image_files(self, image_files):
+        if self._playback_mode is not None:
+            self._stop_playback()
+        with QtCore.QSignalBlocker(self.annotated_only_checkbox):
+            self.annotated_only_checkbox.setChecked(False)
+        self.annotated_only_checkbox.setEnabled(False)
         extensions = utils.get_supported_image_extensions()
 
         self.filename = None
@@ -6660,11 +7231,8 @@ class LabelingWidget(LabelDialog):
                 tuple(extensions)
             ):
                 continue
+            label_file = self._label_file_for_image(file)
             valid_files.append(file)
-            label_file = osp.splitext(file)[0] + ".json"
-            if self.output_dir:
-                label_file_without_path = osp.basename(label_file)
-                label_file = self.output_dir + "/" + label_file_without_path
             item = self._create_file_list_item(file, label_file)
             self.file_list_widget.addItem(item)
             self.fn_to_index[file] = self.file_list_widget.count() - 1
@@ -6681,23 +7249,40 @@ class LabelingWidget(LabelDialog):
         if valid_files and self._config.get("exif_scan_enabled", True):
             self.async_exif_scanner.start_scan(valid_files)
 
-    def import_image_folder(self, dirpath, pattern=None, load=True):
+    def import_image_folder(
+        self,
+        dirpath,
+        pattern=None,
+        load=True,
+        preserve_current=False,
+        force_reload=False,
+    ):
+        was_dirty = self.dirty
         if not self.may_continue() or not dirpath:
-            return
+            return False
+        reload_discarded_changes = was_dirty and self.dirty
+        if self._playback_mode is not None:
+            self._stop_playback()
 
         if self.compare_view_manager.is_active():
             self.close_compare_view(confirm=False)
 
+        current_filename = (
+            str(self.filename)
+            if preserve_current and self.filename is not None
+            else None
+        )
         self.last_open_dir = dirpath
         self.filename = None
-        self.file_list_widget.clear()
-        image_files = []
+        all_image_files = list(utils.scan_all_images(dirpath))
+        visible_files = []
+        visible_entries = []
 
         search_pattern = parse_search_pattern(pattern) if pattern else None
+        only_annotated = self.annotated_only_checkbox.isChecked()
 
-        for file_index, filename in enumerate(
-            utils.scan_all_images(dirpath), start=1
-        ):
+        for file_index, filename in enumerate(all_image_files, start=1):
+            label_file = self._label_file_for_image(filename)
             if search_pattern:
                 if search_pattern.mode == "index":
                     if search_pattern.index != file_index:
@@ -6707,36 +7292,87 @@ class LabelingWidget(LabelDialog):
                         continue
 
                     if search_pattern.mode == "attribute":
-                        label_file = osp.splitext(filename)[0] + ".json"
-                        if self.output_dir:
-                            label_file_without_path = osp.basename(label_file)
-                            label_file = (
-                                self.output_dir + "/" + label_file_without_path
-                            )
-
                         if not matches_label_attribute(
                             filename, label_file, search_pattern
                         ):
                             continue
 
-            image_files.append(filename)
-            label_file = osp.splitext(filename)[0] + ".json"
-            if self.output_dir:
-                label_file_without_path = osp.basename(label_file)
-                label_file = self.output_dir + "/" + label_file_without_path
-            item = self._create_file_list_item(filename, label_file)
-            self.file_list_widget.addItem(item)
-            self.fn_to_index[filename] = self.file_list_widget.count() - 1
+            if only_annotated and not QtCore.QFile.exists(label_file):
+                continue
 
-        self.actions.open_next_image.setEnabled(True)
-        self.actions.open_prev_image.setEnabled(True)
-        self.actions.open_next_unchecked_image.setEnabled(True)
-        self.actions.open_prev_unchecked_image.setEnabled(True)
-        self.toggle_actions(True)
-        self.open_next_image(load=load)
+            visible_files.append(filename)
+            visible_entries.append((filename, label_file))
 
-        if image_files and self._config.get("exif_scan_enabled", True):
-            self.async_exif_scanner.start_scan(image_files)
+        target_filename = (
+            _select_filtered_file(
+                all_image_files,
+                visible_files,
+                current_filename,
+            )
+            if preserve_current
+            else (visible_files[0] if visible_files else None)
+        )
+
+        with QtCore.QSignalBlocker(self.file_list_widget):
+            self.file_list_widget.clear()
+            self.fn_to_index.clear()
+            for filename, label_file in visible_entries:
+                item = self._create_file_list_item(filename, label_file)
+                self.file_list_widget.addItem(item)
+                self.fn_to_index[filename] = (
+                    self.file_list_widget.count() - 1
+                )
+            if target_filename is not None:
+                self.file_list_widget.setCurrentRow(
+                    self.fn_to_index[target_filename]
+                )
+
+        self.toggle_actions(bool(visible_files))
+        has_multiple_files = len(visible_files) > 1
+        self.actions.open_next_image.setEnabled(has_multiple_files)
+        self.actions.open_prev_image.setEnabled(has_multiple_files)
+        self.actions.open_next_unchecked_image.setEnabled(has_multiple_files)
+        self.actions.open_prev_unchecked_image.setEnabled(has_multiple_files)
+        self.annotated_only_checkbox.setEnabled(True)
+
+        if target_filename is None:
+            self.reset_state()
+            self.set_clean()
+            self.toggle_actions(False)
+            self.canvas.setEnabled(False)
+            self.actions.save_as.setEnabled(False)
+            self.playback_control.set_total_frames(0)
+            self.update_progress_title()
+            message = (
+                self.tr("No annotated frames match the current filters")
+                if only_annotated
+                else self.tr("No frames match the current filters")
+            )
+            self.status(message, 3000)
+        else:
+            loaded_target_matches = (
+                current_filename == target_filename
+                and self.image_path is not None
+                and osp.normcase(osp.abspath(str(self.image_path)))
+                == osp.normcase(osp.abspath(target_filename))
+                and not self.image.isNull()
+            )
+            self.filename = target_filename
+            if load and (
+                force_reload
+                or reload_discarded_changes
+                or not loaded_target_matches
+            ):
+                self.load_file(target_filename)
+            else:
+                self._sync_playback_control(
+                    self.fn_to_index[target_filename]
+                )
+                self.update_progress_title()
+
+        if visible_files and self._config.get("exif_scan_enabled", True):
+            self.async_exif_scanner.start_scan(visible_files)
+        return True
 
     def toggle_auto_labeling_widget(self):
         """Toggle auto labeling widget visibility."""

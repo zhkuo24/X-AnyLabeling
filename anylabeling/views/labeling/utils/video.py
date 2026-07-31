@@ -23,6 +23,9 @@ from PyQt6.QtWidgets import (
 
 from anylabeling.views.labeling.chatbot.style import ChatbotDialogStyle
 from anylabeling.views.labeling.logger import logger
+from anylabeling.views.labeling.utils.media import (
+    install_extracted_directory,
+)
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import (
     get_msg_box_style,
@@ -143,6 +146,8 @@ class FrameExtractionDialog(QDialog):
 
 
 def extract_frames_from_video(self, input_file, out_dir):
+    """Extract frames and return ``(output_dir, effective_fps)`` on success."""
+
     temp_video_path = None
     video_capture = None
     opened_successfully = False
@@ -218,6 +223,24 @@ def extract_frames_from_video(self, input_file, out_dir):
             return None
 
         interval, prefix, seq_len = dialog.get_values()
+        if (
+            osp.isabs(prefix)
+            or prefix in {".", ".."}
+            or "/" in prefix
+            or "\\" in prefix
+            or "%" in prefix
+            or ":" in prefix
+        ):
+            popup = Popup(
+                self.tr(
+                    "Filename prefix must be a name, not a path, and cannot "
+                    "contain '/', '\\\\', ':', or '%'."
+                ),
+                self,
+                icon=new_icon_path("warning", "svg"),
+            )
+            popup.show_popup(self, position="center")
+            return None
         os.makedirs(out_dir, exist_ok=True)
 
         # --- Check for ffmpeg ---
@@ -457,13 +480,15 @@ def extract_frames_from_video(self, input_file, out_dir):
                         try:
                             write_success = cv2.imwrite(frame_filename, frame)
                             if not write_success:
-                                logger.error(
+                                raise OSError(
                                     f"Failed to write frame: {frame_filename}"
                                 )
                         except Exception as e:
                             logger.error(
                                 f"Error writing frame {frame_filename}: {e}"
                             )
+                            progress_dialog.close()
+                            raise
 
                         saved_frame_count += 1
                         progress_dialog.setValue(saved_frame_count)
@@ -477,14 +502,23 @@ def extract_frames_from_video(self, input_file, out_dir):
                     logger.warning(
                         f"Extraction cancelled. Frames saved so far (OpenCV): {saved_frame_count}"
                     )
-                    # Decide if cancellation is an error or partial success. Currently returns out_dir.
+                    return None
                 else:
                     logger.info(
                         f"OpenCV extraction finished. Saved frames: {saved_frame_count}"
                     )
 
             # --- Common success return (after ffmpeg or OpenCV) ---
-            return out_dir
+            extracted_frames = [
+                name
+                for name in os.listdir(out_dir)
+                if name.startswith(prefix) and name.lower().endswith(".jpg")
+            ]
+            if not extracted_frames:
+                logger.error("Video extraction produced no readable frames.")
+                return None
+            effective_fps = fps / interval if interval > 0 else fps
+            return out_dir, effective_fps
 
         # Except block for the *inner* try (extraction phase: ffmpeg or OpenCV)
         except Exception as extraction_e:
@@ -554,7 +588,18 @@ def open_video_file(self):
         osp.dirname(input_file), osp.splitext(osp.basename(input_file))[0]
     )
 
-    if osp.exists(out_dir):
+    if osp.lexists(out_dir) and (
+        not osp.isdir(out_dir) or osp.islink(out_dir)
+    ):
+        popup = Popup(
+            f"Frame output path exists but is not a directory: {out_dir}",
+            self,
+            icon=new_icon_path("error", "svg"),
+        )
+        popup.show_popup(self, position="center")
+        return
+
+    if osp.lexists(out_dir):
         response = QMessageBox()
         response.setIcon(QMessageBox.Icon.Warning)
         response.setWindowTitle(self.tr("Warning"))
@@ -578,44 +623,47 @@ def open_video_file(self):
             )
             return
 
-        logger.info(f"Removing existing directory: {out_dir}")
-        try:
-            shutil.rmtree(out_dir)
-        except OSError as e:
-            logger.error(f"Failed to remove directory {out_dir}: {e}")
-            popup = Popup(
-                f"Failed to remove existing directory: {e}",
-                self,
-                icon=new_icon_path("error", "svg"),
-            )
-            popup.show_popup(self, position="center")
-            return  # Don't proceed if removal fails
-
-    # Extract frames from video
-    logger.info(f"Starting frame extraction for: {input_file} -> {out_dir}")
-    result_dir = extract_frames_from_video(self, input_file, out_dir)
-
-    # Check if extraction process indicated success (returned the directory path)
-    if result_dir:
+    temporary_dir = None
+    try:
+        output_parent = osp.dirname(out_dir) or "."
+        temporary_dir = tempfile.mkdtemp(
+            prefix=f".{osp.basename(out_dir)}-",
+            dir=output_parent,
+        )
         logger.info(
-            f"✅ Frame extraction process finished for directory: {result_dir}"
+            f"Starting frame extraction for: {input_file} -> {temporary_dir}"
         )
-        # Update the canvas only if successful (or partially successful)
-        self.import_image_folder(result_dir)
-    else:
-        logger.warning(
-            f"Frame extraction failed or was cancelled for: {input_file}"
+        extraction_result = extract_frames_from_video(
+            self, input_file, temporary_dir
         )
-        # Optional: Clean up empty output directory if extraction failed completely before starting
-        if osp.exists(out_dir) and not os.listdir(out_dir):
-            try:
-                os.rmdir(out_dir)
-                logger.info(f"Removed empty output directory: {out_dir}")
-            except OSError as e:
-                logger.error(
-                    f"Failed to remove empty output directory {out_dir}: {e}"
-                )
-        elif osp.exists(out_dir):
-            logger.info(
-                f"Output directory {out_dir} may contain partial results from cancellation or failure."
+        if not extraction_result:
+            logger.warning(
+                f"Frame extraction failed or was cancelled for: {input_file}"
             )
+            return
+
+        result_dir, effective_fps = extraction_result
+        if osp.abspath(result_dir) != osp.abspath(temporary_dir):
+            raise RuntimeError(
+                "Video extraction returned an unexpected output directory."
+            )
+        install_extracted_directory(temporary_dir, out_dir)
+        temporary_dir = None
+        playback_fps_setter = getattr(self, "set_playback_fps", None)
+        if callable(playback_fps_setter):
+            playback_fps_setter(effective_fps)
+        logger.info(
+            f"Frame extraction process finished for directory: {out_dir}"
+        )
+        self.import_image_folder(out_dir)
+    except Exception as error:
+        logger.exception(f"Failed to install extracted video frames: {error}")
+        popup = Popup(
+            f"Failed to install extracted video frames: {error}",
+            self,
+            icon=new_icon_path("error", "svg"),
+        )
+        popup.show_popup(self, position="center")
+    finally:
+        if temporary_dir is not None and osp.exists(temporary_dir):
+            shutil.rmtree(temporary_dir, ignore_errors=True)

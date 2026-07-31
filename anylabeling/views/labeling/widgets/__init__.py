@@ -24,6 +24,12 @@ from .model_dropdown_widget import SearchBar
 from .navigator_widget import NavigatorDialog
 from .overview_dialog import OverviewDialog
 from .polygon_sides_dialog import PolygonSidesDialog
+from .playback_control import (
+    PlaybackControl,
+    PlaybackControlBar,
+    next_loop_index,
+    symmetric_loop_bounds,
+)
 from .ppocr_dialog import PPOCRDialog
 from .popup import Popup
 from .toolbar import ToolBar

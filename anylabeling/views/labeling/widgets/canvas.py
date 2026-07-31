@@ -5124,6 +5124,17 @@ class Canvas(
             self.shapes = []
         self.update()
 
+    def set_preview_pixmap(self, pixmap):
+        """Replace only the displayed background image.
+
+        Media loop playback uses this path to preview neighbouring frames while
+        keeping the anchor frame's annotations and in-progress interaction
+        state intact.  Unlike :meth:`load_pixmap`, this deliberately does not
+        cancel brush mode, clear shapes, or reset the current drawing.
+        """
+        self.pixmap = pixmap
+        self.update()
+
     def load_shapes(self, shapes, replace=True):
         """Load shapes"""
         self.cancel_brush_mode()

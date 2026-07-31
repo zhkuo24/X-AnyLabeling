@@ -15,6 +15,30 @@ from .export import (
     export_pporc_annotation,
     export_vlm_r1_ovd_annotation,
 )
+
+
+def open_dicom_file(parent):
+    """Load the optional DICOM importer only when the action is used."""
+
+    try:
+        from .dicom import open_dicom_file as _open_dicom_file
+    except ModuleNotFoundError as error:
+        if error.name != "pydicom":
+            raise
+        from PyQt6.QtWidgets import QMessageBox
+
+        QMessageBox.critical(
+            parent,
+            parent.tr("DICOM / RUN Error"),
+            parent.tr(
+                "DICOM support requires the 'pydicom' package. "
+                "Install the updated project dependencies and try again."
+            ),
+        )
+        return None
+    return _open_dicom_file(parent)
+
+
 from .general import (
     gradient_text,
     hex_to_rgb,
