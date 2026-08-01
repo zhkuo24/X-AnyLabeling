@@ -80,7 +80,6 @@ from .widgets import (
     FileDialogPreview,
     PPOCRDialog,
     PlaybackControlBar,
-    next_loop_index,
     symmetric_loop_bounds,
     VideoClassifierDialog,
     ShapeModifyDialog,
@@ -263,8 +262,9 @@ class LabelingWidget(LabelDialog):
         self._playback_internal_change = False
         self._playback_fps = 30
         self._playback_loop_radius = 3
-        self._playback_preview_cache = {}
-        self._playback_anchor_pixmap = None
+        self._playback_loop_indices = []
+        self._playback_loop_start_index = None
+        self._playback_loop_current_index = None
 
         self._no_selection_slot = False
         self._copied_shapes = None
@@ -4279,28 +4279,70 @@ class LabelingWidget(LabelDialog):
         self.update_attributes(selected_idx)
 
     def file_search_changed(self):
-        if not self.last_open_dir:
-            return
-        self.import_image_folder(
-            self.last_open_dir,
-            pattern=self.file_search.text(),
-            load=True,
-            preserve_current=True,
-        )
+        # Filter the visible list items without rebuilding the sequence so
+        # loop playback still runs over every frame (2.5.3 behavior).
+        self._apply_file_list_filters()
 
     def annotated_filter_changed(self, checked):
-        if not self.last_open_dir:
+        # Hide/show unannotated frames without rebuilding the sequence.
+        # Keeping the items in the widget means ``image_list`` stays
+        # complete and loop playback runs over all frames instead of only
+        # the annotated ones (2.5.3 behavior).
+        self._apply_file_list_filters()
+
+    def _apply_file_list_filters(self):
+        """Hide file-list items that do not match the annotated-only or
+        search filters.
+
+        Items are hidden instead of removed so the playback sequence
+        (``image_list``) always contains every frame.
+        """
+        if self.file_list_widget.count() == 0:
             return
-        refreshed = self.import_image_folder(
-            self.last_open_dir,
-            pattern=self.file_search.text(),
-            load=True,
-            preserve_current=True,
+        only_annotated = self.annotated_only_checkbox.isChecked()
+        search_text = (
+            self.file_search.text().strip()
+            if hasattr(self, "file_search")
+            else ""
         )
-        if refreshed:
-            return
-        with QtCore.QSignalBlocker(self.annotated_only_checkbox):
-            self.annotated_only_checkbox.setChecked(not checked)
+        search_pattern = (
+            parse_search_pattern(search_text) if search_text else None
+        )
+        current_item = self.file_list_widget.currentItem()
+        first_visible = None
+        for i in range(self.file_list_widget.count()):
+            item = self.file_list_widget.item(i)
+            filename = item.text()
+            label_file = self._label_file_for_image(filename)
+            annotated = QtCore.QFile.exists(label_file)
+
+            is_visible = True
+            if search_pattern is not None:
+                file_index = self.fn_to_index.get(filename, i) + 1
+                if search_pattern.mode == "index":
+                    is_visible = search_pattern.index == file_index
+                else:
+                    is_visible = matches_filename(filename, search_pattern)
+                    if is_visible and search_pattern.mode == "attribute":
+                        is_visible = matches_label_attribute(
+                            filename, label_file, search_pattern
+                        )
+            if is_visible and only_annotated and not annotated:
+                is_visible = False
+
+            item.setHidden(not is_visible)
+            if is_visible and first_visible is None:
+                first_visible = item
+        # Keep a visible item selected when the current one became hidden.
+        # Do not touch the selection while loop playback is active so the
+        # selection change cannot stop the playback.
+        if (
+            self._playback_mode is None
+            and current_item is not None
+            and current_item.isHidden()
+            and first_visible is not None
+        ):
+            self.file_list_widget.setCurrentItem(first_visible)
 
     def file_selection_changed(self):
         items = self.file_list_widget.selectedItems()
@@ -6110,9 +6152,15 @@ class LabelingWidget(LabelDialog):
         # Always refresh the dialog's source image so the inline adjustment
         # sliders can reuse its brightness/contrast pipeline (which includes
         # 16-bit grayscale handling).
-        self.brightness_contrast_dialog.update_image(
-            utils.img_data_to_pil(self.image_data)
-        )
+        try:
+            pil_image = utils.img_data_to_pil(self.image_data)
+        except Exception as error:
+            # Frames that Pillow cannot decode (e.g. DICOM-derived data or
+            # exotic formats) must not break the normal load pipeline.
+            logger.error(f"Failed to decode image for brightness/contrast: {error}")
+            pil_image = None
+        if pil_image is not None:
+            self.brightness_contrast_dialog.update_image(pil_image)
         self.brightness_contrast_dialog.set_values(
             brightness if brightness is not None else 50,
             contrast if contrast is not None else 50,
@@ -6319,8 +6367,24 @@ class LabelingWidget(LabelDialog):
             len(self.image_list),
             self._playback_loop_radius,
         )
-        if not start <= self._playback_display_index <= end:
-            self._show_loop_preview(self._playback_anchor_index)
+        self._playback_loop_indices = list(range(start, end + 1))
+        if (
+            self._playback_loop_current_index is not None
+            and 0 <= self._playback_loop_current_index
+            < len(self._playback_loop_indices)
+        ):
+            current = self._playback_loop_indices[
+                self._playback_loop_current_index
+            ]
+            if not start <= current <= end:
+                self._playback_loop_current_index = (
+                    self._playback_loop_indices.index(
+                        self._playback_anchor_index
+                    )
+                )
+                self._load_image_only_for_loop(self._playback_anchor_index)
+                self._playback_display_index = self._playback_anchor_index
+                self._sync_playback_control(self._playback_anchor_index)
 
     def _confirm_playback_frame_change(self):
         if not self.dirty:
@@ -6416,7 +6480,13 @@ class LabelingWidget(LabelDialog):
 
     def toggle_loop_playback(self):
         if self._playback_mode == self.PLAYBACK_LOOP:
-            self._stop_playback()
+            # Stopping: persist edits collected during the loop first, then
+            # stop and return to the anchor frame (2.5.3 behavior).
+            self._ensure_loop_edits_saved()
+            self._stop_playback(restore_anchor=True)
+            self.status(
+                self.tr("Loop playback stopped, returned to anchor frame")
+            )
             return
         if self._playback_mode is not None:
             self._stop_playback()
@@ -6429,22 +6499,38 @@ class LabelingWidget(LabelDialog):
             self._sync_playback_control()
             return
 
+        # Persist pending edits before starting a new loop.
+        self._ensure_all_edits_saved()
+
         self._playback_mode = self.PLAYBACK_LOOP
         self._playback_anchor_index = anchor_index
         self._playback_display_index = anchor_index
-        self._playback_anchor_pixmap = QtGui.QPixmap(self.canvas.pixmap)
-        self._playback_preview_cache = {
-            anchor_index: self._playback_anchor_pixmap
-        }
-        self.playback_timer.start(
-            max(1, int(round(1000 / self._playback_fps)))
-        )
-        self._sync_playback_control(anchor_index)
+
         start, end = symmetric_loop_bounds(
             anchor_index,
             len(self.image_list),
             self._playback_loop_radius,
         )
+        self._playback_loop_indices = list(range(start, end + 1))
+        self._playback_loop_start_index = anchor_index
+        self._playback_loop_current_index = self._playback_loop_indices.index(
+            anchor_index
+        )
+
+        # Reload the anchor frame with the latest saved data so the loop
+        # starts from a consistent state. Suppress the re-entrant
+        # _stop_playback() triggered by load_file()/reset_state() while this
+        # reload is in progress.
+        self._playback_internal_change = True
+        try:
+            self._load_loop_anchor_frame_with_latest_data()
+        finally:
+            self._playback_internal_change = False
+
+        self.playback_timer.start(
+            max(1, int(round(1000 / self._playback_fps)))
+        )
+        self._sync_playback_control(anchor_index)
         self.status(
             self.tr(
                 "Looping frames {start}–{end} around frame {anchor}"
@@ -6460,19 +6546,36 @@ class LabelingWidget(LabelDialog):
         anchor_index = self._playback_anchor_index
         self.playback_timer.stop()
 
-        if (
-            previous_mode == self.PLAYBACK_LOOP
-            and restore_anchor
-            and self._playback_anchor_pixmap is not None
-        ):
-            self.canvas.set_preview_pixmap(self._playback_anchor_pixmap)
-            self._playback_display_index = anchor_index
-
+        # Clear the active mode BEFORE reloading the anchor frame so the
+        # nested load_file()/reset_state() calls cannot re-enter
+        # _stop_playback and cause infinite recursion.
         self._playback_mode = None
+        self._playback_internal_change = True
+        try:
+            if (
+                previous_mode == self.PLAYBACK_LOOP
+                and restore_anchor
+                and anchor_index is not None
+                and 0 <= anchor_index < len(self.image_list)
+            ):
+                # Return to the anchor frame with the latest saved data
+                # instead of a cached preview pixmap (2.5.3 behavior).
+                try:
+                    self._load_loop_anchor_frame_with_latest_data()
+                except Exception:
+                    # Keep the state machine consistent even if the anchor
+                    # frame cannot be reloaded (e.g. an undecodable frame).
+                    logger.error(
+                        "Failed to return to the anchor frame after playback"
+                    )
+                self._playback_display_index = anchor_index
+        finally:
+            self._playback_internal_change = False
+
         self._playback_anchor_index = None
-        self._playback_display_index = None
-        self._playback_preview_cache = {}
-        self._playback_anchor_pixmap = None
+        self._playback_loop_indices = []
+        self._playback_loop_start_index = None
+        self._playback_loop_current_index = None
         if previous_mode == self.PLAYBACK_SEQUENCE:
             self.canvas.setEnabled(self.filename is not None)
         self._sync_playback_control(
@@ -6513,15 +6616,7 @@ class LabelingWidget(LabelDialog):
             return
 
         if self._playback_mode == self.PLAYBACK_LOOP:
-            start, end = symmetric_loop_bounds(
-                self._playback_anchor_index,
-                len(self.image_list),
-                self._playback_loop_radius,
-            )
-            next_index = next_loop_index(
-                self._playback_display_index, start, end
-            )
-            self._show_loop_preview(next_index)
+            self._open_next_loop_frame()
 
     def _load_playback_frame(self, frame_index, *, for_sequence=False):
         if not 0 <= frame_index < len(self.image_list):
@@ -6545,54 +6640,217 @@ class LabelingWidget(LabelDialog):
             self._sync_playback_control(frame_index)
         return bool(loaded)
 
-    def _show_loop_preview(self, frame_index):
-        if self._playback_mode != self.PLAYBACK_LOOP:
-            return False
-        if not 0 <= frame_index < len(self.image_list):
-            return False
+    def _open_next_loop_frame(self):
+        """Switch to the next frame inside the loop.
 
-        pixmap = self._playback_preview_cache.get(frame_index)
-        if pixmap is None:
-            frame_path = self.image_list[frame_index]
-            image_data = LabelFile.load_image_file(frame_path)
-            try:
-                image = utils.img_data_to_qimage(image_data, frame_path)
-            except Exception as error:
-                logger.error(
-                    f"Failed to decode playback frame {frame_path}: {error}"
-                )
-                image = QtGui.QImage()
-            if image.isNull():
-                self._stop_playback()
-                self.status(
-                    self.tr("Failed to load a loop preview frame"), 3000
-                )
-                return False
-            pixmap = QtGui.QPixmap.fromImage(image)
-            if (
-                self._playback_anchor_pixmap is not None
-                and pixmap.size() != self._playback_anchor_pixmap.size()
-            ):
-                self._stop_playback()
-                self.status(
-                    self.tr(
-                        "Loop playback stopped because frame sizes differ"
-                    ),
-                    4000,
-                )
-                return False
+        The image is swapped for real and the annotations follow the frame:
+        each looped frame displays its own saved annotations instead of the
+        accumulated annotations of the anchor frame.  Any edits made on the
+        current frame are persisted before the switch.
+        """
+        if (
+            self._playback_mode != self.PLAYBACK_LOOP
+            or not self._playback_loop_indices
+            or self._playback_loop_current_index is None
+        ):
+            return
 
-            if len(self._playback_preview_cache) >= 12:
-                for cached_index in tuple(self._playback_preview_cache):
-                    if cached_index != self._playback_anchor_index:
-                        self._playback_preview_cache.pop(cached_index)
-                        break
-            self._playback_preview_cache[frame_index] = pixmap
+        # Persist edits made on the currently displayed frame before
+        # switching, so they are not lost when the new frame's annotations
+        # replace the current ones.
+        self._save_current_loop_frame_edits()
 
-        self.canvas.set_preview_pixmap(pixmap)
+        # Keep the in-progress drawing state so a loop frame switch does not
+        # interrupt an active annotation.
+        drawing_state = {
+            "current_shape": (
+                self.canvas.current.copy()
+                if self.canvas.current is not None
+                else None
+            ),
+            "drawing_mode": self.canvas.mode,
+            "is_drawing": self.canvas.drawing(),
+            "line_points": (
+                self.canvas.line.points.copy()
+                if self.canvas.line is not None
+                and self.canvas.line.points
+                else []
+            ),
+        }
+
+        self._playback_loop_current_index = (
+            self._playback_loop_current_index + 1
+        ) % len(self._playback_loop_indices)
+        frame_index = self._playback_loop_indices[
+            self._playback_loop_current_index
+        ]
+
+        if not self._load_image_only_for_loop(frame_index):
+            self._stop_playback()
+            self.status(
+                self.tr("Loop playback stopped: failed to load a frame"), 3000
+            )
+            return
+
+        # Load the annotations of the newly displayed frame so the labels
+        # follow the frame instead of accumulating on the anchor frame.
+        self._load_loop_frame_annotations(frame_index)
+
+        # Restore the in-progress drawing state so drawing is not interrupted
+        # by a loop frame switch.
+        if drawing_state["current_shape"] is not None:
+            self.canvas.current = drawing_state["current_shape"]
+            self.canvas.mode = drawing_state["drawing_mode"]
+            self.canvas.line.points = drawing_state["line_points"]
+            if drawing_state["is_drawing"]:
+                self.canvas.drawing_polygon.emit(True)
+
+        self.canvas.update()
         self._playback_display_index = frame_index
         self._sync_playback_control(frame_index)
+
+    def _save_current_loop_frame_edits(self):
+        """Save any unsaved edits of the currently displayed loop frame."""
+
+        if not self.dirty or not self.filename:
+            return True
+        try:
+            label_file = osp.splitext(self.image_path)[0] + ".json"
+            if self.output_dir:
+                label_file = osp.join(
+                    self.output_dir, osp.basename(label_file)
+                )
+            if self.save_labels(label_file):
+                self.set_clean()
+                return True
+            return False
+        except Exception as error:
+            logger.error(f"Failed to save loop frame edits: {error}")
+            return False
+
+    def _load_loop_frame_annotations(self, frame_index):
+        """Load the saved annotations of the displayed frame into the UI.
+
+        The current label list and canvas shapes are replaced by the frame's
+        own annotations, so annotations follow the frame during loop
+        playback.
+        """
+
+        filename = self.image_list[frame_index]
+        label_file_path = osp.splitext(filename)[0] + ".json"
+        image_dir = None
+        if self.output_dir:
+            label_file_path = osp.join(
+                self.output_dir, osp.basename(label_file_path)
+            )
+            image_dir = osp.dirname(filename)
+
+        # Replace the current annotations with the frame's own annotations.
+        self.label_list.clear()
+        self.canvas.shapes = []
+
+        default_flags = {k: False for k in self.image_flags or []}
+        if (
+            QtCore.QFile.exists(label_file_path)
+            and LabelFile.is_label_file(label_file_path)
+        ):
+            try:
+                label_file = LabelFile(label_file_path, image_dir)
+                self.label_file = label_file
+                self.other_data = dict(label_file.other_data)
+                flags = dict(default_flags)
+                if label_file.flags is not None:
+                    flags.update(label_file.flags)
+                self.load_shapes(
+                    label_file.shapes, update_last_label=False
+                )
+                self.load_flags(flags)
+            except LabelFileError as error:
+                logger.error(
+                    f"Failed to load annotations for loop frame "
+                    f"{filename}: {error}"
+                )
+                self.label_file = None
+                self.load_flags(default_flags)
+        else:
+            self.label_file = None
+            self.load_flags(default_flags)
+        self.set_clean()
+
+    def _load_image_only_for_loop(self, frame_index):
+        """Load only the image for a looped frame, keeping shapes intact."""
+
+        if not 0 <= frame_index < len(self.image_list):
+            return False
+        filename = self.image_list[frame_index]
+        try:
+            image_data = LabelFile.load_image_file(filename)
+            if not image_data:
+                return False
+            self.image_data = image_data
+            self.image_path = filename
+            self.filename = filename
+            image = utils.img_data_to_qimage(image_data, filename)
+            if image.isNull():
+                return False
+            self.image = image
+            self.canvas.load_pixmap(
+                QtGui.QPixmap.fromImage(image), clear_shapes=False
+            )
+            return True
+        except Exception as error:
+            logger.error(
+                f"Loop playback failed to load frame {filename}: {error}"
+            )
+            return False
+
+    def _ensure_loop_edits_saved(self):
+        """Ensure edits made during loop playback are persisted to the
+        currently displayed frame."""
+
+        if (
+            self._playback_mode == self.PLAYBACK_LOOP
+            and self.dirty
+            and self.filename is not None
+        ):
+            return self._save_current_loop_frame_edits()
         return True
+
+    def _ensure_all_edits_saved(self):
+        """Ensure all pending edits are persisted before playback starts."""
+
+        if self.dirty:
+            if self._playback_mode == self.PLAYBACK_LOOP:
+                return self._ensure_loop_edits_saved()
+            filename = osp.splitext(self.image_path)[0] + ".json"
+            if self.output_dir:
+                filename = osp.join(
+                    self.output_dir, osp.basename(filename)
+                )
+            return self.save_labels(filename)
+        return True
+
+    def _load_loop_anchor_frame_with_latest_data(self):
+        """Reload the anchor frame from disk with its latest data."""
+
+        if self._playback_anchor_index is None:
+            self.load_file(self.filename)
+            return
+        if not 0 <= self._playback_anchor_index < len(self.image_list):
+            self.load_file(self.filename)
+            return
+        anchor_filename = self.image_list[self._playback_anchor_index]
+        try:
+            self.load_file(anchor_filename)
+            self.filename = anchor_filename
+        except Exception as error:
+            logger.error(
+                f"Failed to reload anchor frame {anchor_filename}: {error}"
+            )
+            try:
+                self.load_file(self.filename)
+            except Exception:
+                pass
 
     def _playback_step(self, offset):
         if self._playback_mode is not None:
@@ -7281,25 +7539,11 @@ class LabelingWidget(LabelDialog):
         search_pattern = parse_search_pattern(pattern) if pattern else None
         only_annotated = self.annotated_only_checkbox.isChecked()
 
+        # Every scanned frame is added to the sequence so loop playback
+        # always runs over the full set; the annotated-only and search
+        # filters only hide items afterwards.
         for file_index, filename in enumerate(all_image_files, start=1):
             label_file = self._label_file_for_image(filename)
-            if search_pattern:
-                if search_pattern.mode == "index":
-                    if search_pattern.index != file_index:
-                        continue
-                else:
-                    if not matches_filename(filename, search_pattern):
-                        continue
-
-                    if search_pattern.mode == "attribute":
-                        if not matches_label_attribute(
-                            filename, label_file, search_pattern
-                        ):
-                            continue
-
-            if only_annotated and not QtCore.QFile.exists(label_file):
-                continue
-
             visible_files.append(filename)
             visible_entries.append((filename, label_file))
 
@@ -7326,6 +7570,10 @@ class LabelingWidget(LabelDialog):
                 self.file_list_widget.setCurrentRow(
                     self.fn_to_index[target_filename]
                 )
+
+        # Apply the annotated-only / search filters to the freshly built
+        # list without removing items, keeping the playback sequence intact.
+        self._apply_file_list_filters()
 
         self.toggle_actions(bool(visible_files))
         has_multiple_files = len(visible_files) > 1

@@ -175,75 +175,76 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
             self._wait_until(lambda: str(self.view.filename) == filename)
         )
 
+    def _visible_frames(self):
+        return [
+            self.view.file_list_widget.item(i).text()
+            for i in range(self.view.file_list_widget.count())
+            if not self.view.file_list_widget.item(i).isHidden()
+        ]
+
     def test_filter_search_navigation_and_playback_stay_consistent(self):
         self._select_frame(self.frames[1])
 
         self.view.annotated_only_checkbox.setChecked(True)
+        # The annotated-only filter hides unannotated items but keeps the
+        # playback sequence complete (2.5.3 behavior).
         self.assertTrue(
-            self._wait_until(lambda: len(self.view.image_list) == 4)
+            self._wait_until(lambda: len(self.view.image_list) == 7)
         )
         self.assertEqual(
             self.view.image_list,
+            [self.frames[index] for index in range(7)],
+        )
+        # The current (unannotated) frame becomes hidden, so the selection
+        # moves to the first visible annotated frame.
+        self.assertTrue(
+            self._wait_until(lambda: str(self.view.filename) == self.frames[0])
+        )
+        self.assertEqual(
+            self._visible_frames(),
             [self.frames[index] for index in (0, 2, 3, 6)],
         )
-        self.assertEqual(self.view.filename, self.frames[2])
-        self.assertEqual(self.view.image_path, self.frames[2])
-        self.assertEqual(
-            self.view.fn_to_index,
-            {
-                self.frames[0]: 0,
-                self.frames[2]: 1,
-                self.frames[3]: 2,
-                self.frames[6]: 3,
-            },
-        )
-        self.assertEqual(self.view.playback_control.total_frames, 4)
-        self.assertEqual(self.view.playback_control.current_frame, 1)
-        self.assertEqual(self.view.playback_control.frame_label.text(), "2 / 4")
-        self.assertEqual(
-            self.view.playback_control.progress_slider.maximum(),
-            3,
-        )
-        self.assertEqual(self.view.playback_control.progress_slider.value(), 1)
+        self.assertEqual(self.view.playback_control.total_frames, 7)
 
         self.view.open_next_image()
-        self.assertEqual(self.view.filename, self.frames[3])
+        self.assertEqual(self.view.filename, self.frames[1])
 
         self.view.annotated_only_checkbox.setChecked(False)
         self.assertTrue(
             self._wait_until(lambda: len(self.view.image_list) == 7)
         )
-        self.assertEqual(self.view.filename, self.frames[3])
-        self.assertEqual(self.view.image_path, self.frames[3])
+        self.assertEqual(self.view.filename, self.frames[1])
+        self.assertEqual(self.view.image_path, self.frames[1])
 
         self.view.file_search.setText("keep")
         self.view.file_search_changed()
         self.assertEqual(
             self.view.image_list,
+            [self.frames[index] for index in range(7)],
+        )
+        self.assertEqual(
+            self._visible_frames(),
             [self.frames[index] for index in (0, 1, 2, 4)],
         )
-        self.assertEqual(self.view.filename, self.frames[4])
+        self.assertEqual(self.view.filename, self.frames[1])
 
         self.view.annotated_only_checkbox.setChecked(True)
         self.assertEqual(
-            self.view.image_list,
+            self._visible_frames(),
             [self.frames[index] for index in (0, 2)],
         )
-        self.assertEqual(self.view.filename, self.frames[2])
+        self.assertEqual(self.view.filename, self.frames[0])
 
         self.view.file_search.setText("does-not-exist")
         self.view.file_search_changed()
-        self.assertEqual(self.view.image_list, [])
-        self.assertEqual(self.view.fn_to_index, {})
-        self.assertIsNone(self.view.filename)
-        self.assertIsNone(self.view.image_path)
-        self.assertEqual(self.view.playback_control.total_frames, 0)
-        self.assertFalse(self.view.playback_control.play_button.isEnabled())
+        self.assertEqual(len(self.view.image_list), 7)
+        self.assertEqual(len(self.view.fn_to_index), 7)
+        self.assertEqual(self.view.playback_control.total_frames, 7)
 
         self.view.file_search.clear()
         self.view.file_search_changed()
         self.assertEqual(
-            self.view.image_list,
+            self._visible_frames(),
             [self.frames[index] for index in (0, 2, 3, 6)],
         )
 
@@ -252,15 +253,13 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
         self.view.toggle_loop_playback()
         self.assertTrue(self.view.playback_timer.isActive())
 
+        # Toggling the annotated-only filter must not interrupt an active
+        # loop playback because the sequence itself is unchanged.
         self.view.annotated_only_checkbox.setChecked(True)
-
-        self.assertFalse(self.view.playback_timer.isActive())
-        self.assertIsNone(self.view._playback_mode)
-        self.assertEqual(
-            self.view.image_list,
-            [self.frames[index] for index in (0, 2, 3, 6)],
-        )
-        self.assertEqual(self.view.filename, self.frames[2])
+        self.assertTrue(self.view.playback_timer.isActive())
+        self.assertEqual(self.view._playback_mode, self.view.PLAYBACK_LOOP)
+        self.assertEqual(len(self.view.image_list), 7)
+        self.assertEqual(self.view.filename, self.frames[1])
 
     def test_filter_uses_output_directory_and_keeps_source_image_path(self):
         output_dir = Path(self.temp_dir.name) / "labels"
@@ -283,12 +282,13 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
         )
         self.view.annotated_only_checkbox.setChecked(True)
 
+        # The sequence stays complete; the output-directory labels are the
+        # only visible items.
+        self.assertEqual(len(self.view.image_list), 7)
         self.assertEqual(
-            self.view.image_list,
+            self._visible_frames(),
             [self.frames[index] for index in (1, 5)],
         )
-        self.assertEqual(self.view.filename, self.frames[1])
-        self.assertEqual(self.view.image_path, self.frames[1])
         self.assertTrue(self.view._playback_available())
 
         self.view.toggle_loop_playback()
@@ -308,10 +308,12 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
         ):
             self.view.annotated_only_checkbox.setChecked(True)
 
+        # The annotated-only filter only hides items, so it never discards
+        # unsaved changes (2.5.3 behavior).
         self.assertEqual(self.view.filename, self.frames[0])
         self.assertEqual(self.view.image_path, self.frames[0])
-        self.assertEqual(self.view.shape_text_edit.toPlainText(), "")
-        self.assertFalse(self.view.dirty)
+        self.assertEqual(self.view.shape_text_edit.toPlainText(), "unsaved description")
+        self.assertTrue(self.view.dirty)
 
     def test_cancelled_output_directory_change_rolls_back(self):
         output_dir = Path(self.temp_dir.name) / "new-labels"
@@ -340,7 +342,7 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
 
     def test_recent_file_leaves_filtered_sequence_safely(self):
         self.view.annotated_only_checkbox.setChecked(True)
-        self.assertEqual(len(self.view.image_list), 4)
+        self.assertEqual(len(self.view.image_list), 7)
 
         self.view.load_recent(self.frames[1])
 
@@ -379,7 +381,8 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
         )
         self.view.file_search.setText("shape::1")
         self.view.file_search_changed()
-        self.assertEqual(self.view.image_list, [self.frames[0]])
+        self.assertEqual(len(self.view.image_list), 7)
+        self.assertEqual(self._visible_frames(), [self.frames[0]])
 
         with mock.patch.object(
             QtWidgets.QMessageBox,
@@ -389,10 +392,8 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
             self.view.delete_file()
 
         self.assertFalse(label_path.exists())
-        self.assertEqual(self.view.image_list, [])
-        self.assertEqual(self.view.fn_to_index, {})
-        self.assertIsNone(self.view.filename)
-        self.assertIsNone(self.view.image_path)
+        self.assertEqual(len(self.view.image_list), 7)
+        self.assertEqual(self._visible_frames(), [])
 
 
 if __name__ == "__main__":
