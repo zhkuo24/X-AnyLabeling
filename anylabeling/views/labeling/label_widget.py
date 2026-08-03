@@ -107,6 +107,42 @@ FILE_CHECKED_COLOR = "#22A06B"
 FILE_UNCHECKED_COLOR = "#8C98A4"
 CHECKED_FIELD_PATTERN = re.compile(r'"checked"\s*:\s*(true|false)')
 
+# AI-inferred annotations are tagged with ``attributes[AI_SOURCE_KEY]`` and
+# drawn with a distinct dashed style so they can be reviewed before being
+# promoted to manual annotations.
+AI_SOURCE_KEY = "source"
+AI_SOURCE_VALUE = "AI"
+AI_LINE_COLOR = "#FF8C00"  # Dark orange outline for AI shapes.
+AI_FILL_COLOR = "#FF8C0032"  # Semi-transparent orange fill.
+
+
+def _is_ai_shape(shape):
+    """Return True when ``shape`` is an AI-inferred annotation."""
+
+    attributes = getattr(shape, "attributes", None) or {}
+    return attributes.get(AI_SOURCE_KEY) == AI_SOURCE_VALUE
+
+
+def _mark_ai_shape(shape):
+    """Tag ``shape`` as AI-inferred and apply the AI visual style."""
+
+    if shape.attributes is None:
+        shape.attributes = {}
+    shape.attributes[AI_SOURCE_KEY] = AI_SOURCE_VALUE
+    shape.line_color = QtGui.QColor(AI_LINE_COLOR)
+    shape.fill_color = QtGui.QColor(AI_FILL_COLOR)
+    return shape
+
+
+def _unmark_ai_shape(shape):
+    """Promote ``shape`` from AI-inferred to a manual annotation."""
+
+    attributes = getattr(shape, "attributes", None)
+    if attributes is not None:
+        attributes.pop(AI_SOURCE_KEY, None)
+    shape.line_color = None
+    shape.fill_color = None
+
 
 def _select_filtered_file(all_files, filtered_files, current_file):
     """Choose the nearest visible file while preserving sequence order."""
@@ -1807,6 +1843,17 @@ class LabelingWidget(LabelDialog):
             self.tr("Auto Labeling"),
         )
 
+        approve_ai_annotations = action(
+            self.tr("Approve AI Annotations"),
+            self.approve_ai_annotations,
+            icon="check",
+            tip=self.tr(
+                "Approve the AI annotations of this frame and promote "
+                "them to manual annotations"
+            ),
+            enabled=False,
+        )
+
         self.label_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.NoContextMenu
         )
@@ -1939,6 +1986,7 @@ class LabelingWidget(LabelDialog):
             open_video_classifier=open_video_classifier,
             open_paddleocr=open_paddleocr,
             toggle_auto_labeling_widget=toggle_auto_labeling_widget,
+            approve_ai_annotations=approve_ai_annotations,
             digit_shortcut_manager=digit_shortcut_manager,
             label_manager=label_manager,
             gid_manager=gid_manager,
@@ -2550,6 +2598,29 @@ class LabelingWidget(LabelDialog):
         files_panel_layout = QVBoxLayout(files_panel)
         files_panel_layout.setContentsMargins(0, 0, 0, 0)
         files_panel_layout.setSpacing(0)
+
+        # Approve AI annotations button, placed right above the frame list
+        # so the per-frame review flow stays close to the sequence.
+        self.approve_ai_button = QPushButton(self.tr("Approve AI"))
+        self.approve_ai_button.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self.approve_ai_button.setIcon(utils.new_icon("check", "svg"))
+        self.approve_ai_button.setIconSize(QtCore.QSize(16, 16))
+        self.approve_ai_button.setStyleSheet(get_settings_button_style())
+        self.approve_ai_button.setToolTip(
+            self.tr(
+                "Approve the AI annotations of this frame and promote "
+                "them to manual annotations"
+            )
+        )
+        self.approve_ai_button.setEnabled(False)
+        self.approve_ai_button.clicked.connect(self.approve_ai_annotations)
+        approve_row_layout = QHBoxLayout()
+        approve_row_layout.setContentsMargins(6, 4, 6, 2)
+        approve_row_layout.addWidget(self.approve_ai_button)
+        files_panel_layout.addLayout(approve_row_layout)
+
         file_filter_layout = QHBoxLayout()
         file_filter_layout.setContentsMargins(6, 2, 6, 2)
         file_filter_layout.addWidget(self.annotated_only_checkbox)
@@ -5005,6 +5076,19 @@ class LabelingWidget(LabelDialog):
                 )
 
     def _update_shape_color(self, shape):
+        # AI-inferred shapes keep their distinct visual style so they can
+        # be told apart from manual annotations during review.
+        if _is_ai_shape(shape):
+            ai_color = QtGui.QColor(AI_LINE_COLOR)
+            shape.line_color = ai_color
+            shape.vertex_fill_color = ai_color
+            shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
+            shape.fill_color = QtGui.QColor(ai_color.red(), ai_color.green(), ai_color.blue(), LABEL_OPACITY)
+            shape.select_line_color = QtGui.QColor(255, 255, 255)
+            shape.select_fill_color = QtGui.QColor(
+                ai_color.red(), ai_color.green(), ai_color.blue(), 155
+            )
+            return
         r, g, b = self._get_rgb_by_label(shape.label)
         shape.line_color = QtGui.QColor(r, g, b)
         shape.vertex_fill_color = QtGui.QColor(r, g, b)
@@ -6188,6 +6272,7 @@ class LabelingWidget(LabelDialog):
             self.compare_view_manager.load_compare_for_file(self.filename)
 
         self._sync_playback_control()
+        self._sync_ai_approve_action()
         return True
 
     # QT Overload
@@ -6641,12 +6726,11 @@ class LabelingWidget(LabelDialog):
         return bool(loaded)
 
     def _open_next_loop_frame(self):
-        """Switch to the next frame inside the loop.
+        """Switch to the next frame image inside the loop.
 
-        The image is swapped for real and the annotations follow the frame:
-        each looped frame displays its own saved annotations instead of the
-        accumulated annotations of the anchor frame.  Any edits made on the
-        current frame are persisted before the switch.
+        Only the image is cycled; annotations always stay on the anchor
+        frame so the user can review or edit labels while the loop runs.
+        Edits are saved to the anchor frame when playback stops.
         """
         if (
             self._playback_mode != self.PLAYBACK_LOOP
@@ -6654,11 +6738,6 @@ class LabelingWidget(LabelDialog):
             or self._playback_loop_current_index is None
         ):
             return
-
-        # Persist edits made on the currently displayed frame before
-        # switching, so they are not lost when the new frame's annotations
-        # replace the current ones.
-        self._save_current_loop_frame_edits()
 
         # Keep the in-progress drawing state so a loop frame switch does not
         # interrupt an active annotation.
@@ -6692,10 +6771,6 @@ class LabelingWidget(LabelDialog):
             )
             return
 
-        # Load the annotations of the newly displayed frame so the labels
-        # follow the frame instead of accumulating on the anchor frame.
-        self._load_loop_frame_annotations(frame_index)
-
         # Restore the in-progress drawing state so drawing is not interrupted
         # by a loop frame switch.
         if drawing_state["current_shape"] is not None:
@@ -6710,12 +6785,26 @@ class LabelingWidget(LabelDialog):
         self._sync_playback_control(frame_index)
 
     def _save_current_loop_frame_edits(self):
-        """Save any unsaved edits of the currently displayed loop frame."""
+        """Save unsaved edits to the anchor frame's label file.
 
-        if not self.dirty or not self.filename:
+        During loop playback annotations always belong to the anchor frame,
+        so the save target is always the anchor's JSON.
+        """
+
+        if not self.dirty:
             return True
         try:
-            label_file = osp.splitext(self.image_path)[0] + ".json"
+            anchor_filename = None
+            if (
+                self._playback_anchor_index is not None
+                and 0 <= self._playback_anchor_index < len(self.image_list)
+            ):
+                anchor_filename = self.image_list[
+                    self._playback_anchor_index
+                ]
+            if anchor_filename is None:
+                return False
+            label_file = osp.splitext(anchor_filename)[0] + ".json"
             if self.output_dir:
                 label_file = osp.join(
                     self.output_dir, osp.basename(label_file)
@@ -6727,55 +6816,6 @@ class LabelingWidget(LabelDialog):
         except Exception as error:
             logger.error(f"Failed to save loop frame edits: {error}")
             return False
-
-    def _load_loop_frame_annotations(self, frame_index):
-        """Load the saved annotations of the displayed frame into the UI.
-
-        The current label list and canvas shapes are replaced by the frame's
-        own annotations, so annotations follow the frame during loop
-        playback.
-        """
-
-        filename = self.image_list[frame_index]
-        label_file_path = osp.splitext(filename)[0] + ".json"
-        image_dir = None
-        if self.output_dir:
-            label_file_path = osp.join(
-                self.output_dir, osp.basename(label_file_path)
-            )
-            image_dir = osp.dirname(filename)
-
-        # Replace the current annotations with the frame's own annotations.
-        self.label_list.clear()
-        self.canvas.shapes = []
-
-        default_flags = {k: False for k in self.image_flags or []}
-        if (
-            QtCore.QFile.exists(label_file_path)
-            and LabelFile.is_label_file(label_file_path)
-        ):
-            try:
-                label_file = LabelFile(label_file_path, image_dir)
-                self.label_file = label_file
-                self.other_data = dict(label_file.other_data)
-                flags = dict(default_flags)
-                if label_file.flags is not None:
-                    flags.update(label_file.flags)
-                self.load_shapes(
-                    label_file.shapes, update_last_label=False
-                )
-                self.load_flags(flags)
-            except LabelFileError as error:
-                logger.error(
-                    f"Failed to load annotations for loop frame "
-                    f"{filename}: {error}"
-                )
-                self.label_file = None
-                self.load_flags(default_flags)
-        else:
-            self.label_file = None
-            self.load_flags(default_flags)
-        self.set_clean()
 
     def _load_image_only_for_loop(self, frame_index):
         """Load only the image for a looped frame, keeping shapes intact."""
@@ -6806,7 +6846,7 @@ class LabelingWidget(LabelDialog):
 
     def _ensure_loop_edits_saved(self):
         """Ensure edits made during loop playback are persisted to the
-        currently displayed frame."""
+        anchor frame."""
 
         if (
             self._playback_mode == self.PLAYBACK_LOOP
@@ -7649,22 +7689,30 @@ class LabelingWidget(LabelDialog):
                 )
                 return
 
-        # Clear existing shapes
+        # Tag the incoming shapes as AI-inferred so they can be visually
+        # distinguished from manual annotations and later approved.
+        ai_shapes = [_mark_ai_shape(shape) for shape in auto_labeling_result.shapes]
+
         if auto_labeling_result.replace:
-            locked_shapes = [
-                shape for shape in self.canvas.shapes if shape.locked
+            # Stacking mode: keep the existing (manual) annotations, replace
+            # the previous AI layer and append the new AI result. Overlapping
+            # manual and AI boxes are all kept.
+            manual_shapes = [
+                shape
+                for shape in self.canvas.shapes
+                if not _is_ai_shape(shape)
             ]
             self.label_list.clear()
-            self.load_shapes(
-                locked_shapes + auto_labeling_result.shapes, replace=True
-            )
-        else:  # Just update existing shapes
+            self.load_shapes(manual_shapes + ai_shapes, replace=True)
+        else:  # Interactive update mode
             # Remove shapes with label AutoLabelingMode.OBJECT
             for shape in self.canvas.shapes:
                 if shape.label == AutoLabelingMode.OBJECT:
                     item = self.label_list.find_item_by_shape(shape)
                     self.label_list.remove_item(item)
-            self.load_shapes(auto_labeling_result.shapes, replace=False)
+            self.load_shapes(ai_shapes, replace=False)
+
+        self._sync_ai_approve_action()
 
         # Set image description
         if auto_labeling_result.description:
@@ -7676,6 +7724,67 @@ class LabelingWidget(LabelDialog):
             self.shape_text_edit.setDisabled(False)
 
         self.set_dirty()
+
+    def _sync_ai_approve_action(self):
+        """Enable/disable the AI approve action for the current frame."""
+
+        has_ai = any(_is_ai_shape(shape) for shape in self.canvas.shapes)
+        action = getattr(self.actions, "approve_ai_annotations", None)
+        if action is not None:
+            action.setEnabled(has_ai)
+        button = getattr(self, "approve_ai_button", None)
+        if button is not None:
+            button.setEnabled(has_ai)
+
+    def approve_ai_annotations(self):
+        """Approve the AI-inferred annotations of the current frame.
+
+        The approved AI results become the frame's manual annotations and
+        replace any previously existing (manual) annotations, so only manual
+        annotations remain visible afterwards.  The frame is saved and the
+        review continues on the next frame.
+        """
+
+        if self._playback_mode is not None:
+            self._stop_playback()
+        ai_shapes = [
+            shape for shape in self.canvas.shapes if _is_ai_shape(shape)
+        ]
+        if not ai_shapes:
+            self._sync_ai_approve_action()
+            return
+        if not self.may_continue():
+            return
+
+        locked_shapes = [
+            shape
+            for shape in self.canvas.shapes
+            if shape.locked and not _is_ai_shape(shape)
+        ]
+        for shape in ai_shapes:
+            _unmark_ai_shape(shape)
+
+        # The approved AI results replace the frame's annotations entirely.
+        self.label_list.clear()
+        self.load_shapes(locked_shapes + ai_shapes, replace=True)
+
+        # Persist the approved frame.
+        if self._config["auto_save"]:
+            self.set_dirty()
+        else:
+            label_file = osp.splitext(self.image_path)[0] + ".json"
+            if self.output_dir:
+                label_file = osp.join(
+                    self.output_dir, osp.basename(label_file)
+                )
+            self.save_labels(label_file)
+            self.set_clean()
+
+        self.status(self.tr("AI annotations approved for this frame"))
+        self._sync_ai_approve_action()
+
+        # Continue the review on the next frame.
+        self.open_next_image()
 
     def clear_auto_labeling_marks(self):
         """Clear auto labeling marks from the current image."""
