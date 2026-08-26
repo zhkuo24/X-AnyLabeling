@@ -112,8 +112,48 @@ CHECKED_FIELD_PATTERN = re.compile(r'"checked"\s*:\s*(true|false)')
 # promoted to manual annotations.
 AI_SOURCE_KEY = "source"
 AI_SOURCE_VALUE = "AI"
-AI_LINE_COLOR = "#FF8C00"  # Dark orange outline for AI shapes.
-AI_FILL_COLOR = "#FF8C0032"  # Semi-transparent orange fill.
+AI_LINE_COLOR = "#FF8C00"  # Dark orange outline for AI shapes (fallback).
+# Unused: kept only so external code importing it keeps working.  Note Qt reads
+# a 9-character hex string as #AARRGGBB, so this is opaque, not translucent.
+AI_FILL_COLOR = "#FF8C0032"
+# Outline colours for AI shapes, keyed first by the model suffix the
+# pre-annotator writes into the label, then by anatomical class.  Three models
+# are compared side by side, so six AI contours plus the manual pair can share
+# one frame; one hue family per model with two shades inside it is what keeps
+# them apart.  All are fully saturated, while manual labels get pastel tones
+# from LABEL_COLORMAP - so saturated+dashed reads as AI at a glance.
+# Keys are matched as substrings, so the numeric prefix ("2 管腔-yolo") and any
+# future renaming of the prefix do not have to be spelled out here.
+AI_LINE_COLORS_BY_MODEL = {
+    "-cv2b": {"管腔": "#FFD400", "外弹性膜": "#FF8C00"},     # amber / orange
+    "-nnu5f": {"管腔": "#FF5FD2", "外弹性膜": "#B94FFF"},    # pink  / purple
+    "-yolo": {"管腔": "#00E5FF", "外弹性膜": "#00FF9C"},     # cyan  / spring green
+}
+# Used for AI labels that carry no model suffix (the older "-AI" products).
+AI_LINE_COLORS = {
+    "管腔": "#00E5FF",   # cyan  - lumen
+    "外弹性膜": "#FF8C00",   # orange - EEM
+}
+
+
+def _ai_line_color(label):
+    """Outline colour for an AI shape, matched by substring of ``label``.
+
+    Falls back to ``AI_LINE_COLOR`` for labels that match neither a model nor a
+    class, so adding a new AI class never breaks rendering - it just shows up in
+    the default colour.
+    """
+
+    label = label or ""
+    by_class = AI_LINE_COLORS
+    for suffix, colors in AI_LINE_COLORS_BY_MODEL.items():
+        if suffix in label:
+            by_class = colors
+            break
+    for key, color in by_class.items():
+        if key in label:
+            return color
+    return AI_LINE_COLOR
 
 
 def _is_ai_shape(shape):
@@ -129,8 +169,11 @@ def _mark_ai_shape(shape):
     if shape.attributes is None:
         shape.attributes = {}
     shape.attributes[AI_SOURCE_KEY] = AI_SOURCE_VALUE
-    shape.line_color = QtGui.QColor(AI_LINE_COLOR)
-    shape.fill_color = QtGui.QColor(AI_FILL_COLOR)
+    line_color = QtGui.QColor(_ai_line_color(shape.label))
+    shape.line_color = line_color
+    shape.fill_color = QtGui.QColor(
+        line_color.red(), line_color.green(), line_color.blue(), LABEL_OPACITY
+    )
     return shape
 
 
@@ -208,6 +251,9 @@ class LabelingWidget(LabelDialog):
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
     PLAYBACK_SEQUENCE = "sequence"
     PLAYBACK_LOOP = "loop"
+    # Loop playback runs at a fixed real-time rate (IVUS acquisition ~30 fps),
+    # independent of the FPS spinbox (which only affects sequence playback).
+    LOOP_PLAYBACK_FPS = 30
     next_files_changed = QtCore.pyqtSignal(list)
 
     def __init__(  # noqa: C901
@@ -3043,7 +3089,14 @@ class LabelingWidget(LabelDialog):
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
 
-        if self._config["auto_save"]:
+        # Loop playback displays neighbour frames via _load_image_only_for_loop,
+        # which repoints self.image_path at the previewed frame while the anchor's
+        # shapes stay on the canvas. Autosaving here would write the anchor's
+        # shapes to the neighbour's JSON (spurious duplicate frame). During loop
+        # playback edits belong to the anchor and are persisted by
+        # _ensure_loop_edits_saved()/_save_current_loop_frame_edits() on stop, so
+        # skip the immediate autosave and just mark dirty.
+        if self._config["auto_save"] and self._playback_mode != self.PLAYBACK_LOOP:
             label_file = osp.splitext(self.image_path)[0] + ".json"
             if self.output_dir:
                 label_file_without_path = osp.basename(label_file)
@@ -3223,6 +3276,7 @@ class LabelingWidget(LabelDialog):
             if label in self.label_info:
                 self.label_info[label]["visible"] = visible
         self._sync_label_list_visibility(lambda _item: visible)
+        self.set_dirty()
 
     def reset_attribute(self, text, shape):
         # Skip validation for auto-labeling special constants
@@ -5007,47 +5061,62 @@ class LabelingWidget(LabelDialog):
         else:
             text = f"{shape.label} ({shape.group_id})"
         label_list_item = LabelListWidgetItem(text, shape)
-        self.label_list.add_iem(label_list_item)
-        if not self.unique_label_list.find_items_by_label(shape.label):
-            item = self.unique_label_list.create_item_from_label(shape.label)
-            self.unique_label_list.addItem(item)
-            rgb = self._get_rgb_by_label(shape.label)
-            self.unique_label_list.set_item_label(
-                item, shape.label, rgb, LABEL_OPACITY
+        # Restore per-shape visibility (saved as ``visible`` in the label
+        # file) so previously unchecked objects stay unchecked after
+        # switching frames / playback.
+        if not shape.visible:
+            label_list_item.setCheckState(Qt.CheckState.Unchecked)
+        # Suppress itemChanged while constructing the row: the visual
+        # updates below (text / lock / background) must not be treated as
+        # user edits, otherwise label_item_changed -> set_dirty() would
+        # trigger an auto-save in the middle of loading a frame and replace
+        # self.label_file with an unloaded LabelFile instance.
+        model = self.label_list.model()
+        blocker = QtCore.QSignalBlocker(model)
+        try:
+            self.label_list.add_iem(label_list_item)
+            if not self.unique_label_list.find_items_by_label(shape.label):
+                item = self.unique_label_list.create_item_from_label(shape.label)
+                self.unique_label_list.addItem(item)
+                rgb = self._get_rgb_by_label(shape.label)
+                self.unique_label_list.set_item_label(
+                    item, shape.label, rgb, LABEL_OPACITY
+                )
+
+            if shape.label not in self.label_info:
+                rgb = self._get_rgb_by_label(shape.label)
+                self.label_info[shape.label] = dict(
+                    delete=False,
+                    value=None,
+                    color=list(rgb),
+                    opacity=LABEL_OPACITY,
+                    visible=True,
+                )
+
+            # Add label to history if it is not a special label
+            if shape.label not in [
+                AutoLabelingMode.OBJECT,
+                AutoLabelingMode.ADD,
+                AutoLabelingMode.REMOVE,
+            ]:
+                self.label_dialog.add_label_history(
+                    shape.label, update_last_label=update_last_label
+                )
+                if update_last_label and shape.group_id is not None:
+                    self.label_dialog._last_gid = shape.group_id
+
+            for action in self.actions.on_shapes_present:
+                action.setEnabled(True)
+
+            self._update_shape_color(shape)
+            color = shape.fill_color.getRgb()[:3]
+            label_list_item.setText(
+                _format_label_list_text(shape.label, shape.group_id)
             )
-
-        if shape.label not in self.label_info:
-            rgb = self._get_rgb_by_label(shape.label)
-            self.label_info[shape.label] = dict(
-                delete=False,
-                value=None,
-                color=list(rgb),
-                opacity=LABEL_OPACITY,
-                visible=True,
-            )
-
-        # Add label to history if it is not a special label
-        if shape.label not in [
-            AutoLabelingMode.OBJECT,
-            AutoLabelingMode.ADD,
-            AutoLabelingMode.REMOVE,
-        ]:
-            self.label_dialog.add_label_history(
-                shape.label, update_last_label=update_last_label
-            )
-            if update_last_label and shape.group_id is not None:
-                self.label_dialog._last_gid = shape.group_id
-
-        for action in self.actions.on_shapes_present:
-            action.setEnabled(True)
-
-        self._update_shape_color(shape)
-        color = shape.fill_color.getRgb()[:3]
-        label_list_item.setText(
-            _format_label_list_text(shape.label, shape.group_id)
-        )
-        _set_label_list_item_lock(label_list_item, shape.locked)
-        label_list_item.setBackground(QtGui.QColor(*color, LABEL_OPACITY))
+            _set_label_list_item_lock(label_list_item, shape.locked)
+            label_list_item.setBackground(QtGui.QColor(*color, LABEL_OPACITY))
+        finally:
+            del blocker
         if refresh_filters:
             self._refresh_shape_filters()
 
@@ -5079,7 +5148,7 @@ class LabelingWidget(LabelDialog):
         # AI-inferred shapes keep their distinct visual style so they can
         # be told apart from manual annotations during review.
         if _is_ai_shape(shape):
-            ai_color = QtGui.QColor(AI_LINE_COLOR)
+            ai_color = QtGui.QColor(_ai_line_color(shape.label))
             shape.line_color = ai_color
             shape.vertex_fill_color = ai_color
             shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
@@ -5162,7 +5231,16 @@ class LabelingWidget(LabelDialog):
             )
             self.flag_widget.addItem(item)
 
-    def _sync_label_list_visibility(self, get_visible):
+    def _sync_label_list_visibility(self, get_visible, apply_shape_state=True):
+        """Sync the Objects panel checkboxes with ``get_visible(item)``.
+
+        ``canvas.visible`` (what is actually drawn) always follows the sync
+        result.  ``shape.visible`` (the persistent per-shape state that is
+        saved to the label file) is only overwritten when
+        ``apply_shape_state`` is True - filter syncs must not clobber the
+        per-shape checkbox state, otherwise a hidden object would come back
+        as visible after switching frames.
+        """
         model = self.label_list.model()
         blocker = QtCore.QSignalBlocker(model)
         self.label_list.setUpdatesEnabled(False)
@@ -5177,7 +5255,8 @@ class LabelingWidget(LabelDialog):
                 if item.checkState() != check_state:
                     item.setCheckState(check_state)
                 shape = item.shape()
-                shape.visible = is_visible
+                if apply_shape_state:
+                    shape.visible = is_visible
                 self.canvas.visible[shape] = is_visible
         finally:
             self.label_list.setUpdatesEnabled(True)
@@ -5209,9 +5288,11 @@ class LabelingWidget(LabelDialog):
 
     def apply_label_visibility(self):
         self._sync_label_list_visibility(
-            lambda item: self.label_info.get(item.shape().label, {}).get(
+            lambda item: item.shape().visible
+            and self.label_info.get(item.shape().label, {}).get(
                 "visible", True
-            )
+            ),
+            apply_shape_state=False,
         )
 
     def update_combo_box(self, block_signal=False):
@@ -5386,9 +5467,11 @@ class LabelingWidget(LabelDialog):
         label = self.label_filter_combobox.text_box.itemText(index)
         self._sync_label_list_visibility(
             lambda item: label in ["", item.shape().label]
+            and item.shape().visible
             and self.label_info.get(item.shape().label, {}).get(
                 "visible", True
-            )
+            ),
+            apply_shape_state=False,
         )
 
     def gid_selection_changed(self, index):
@@ -5400,6 +5483,8 @@ class LabelingWidget(LabelDialog):
                 if item.shape().group_id is not None
                 else ["-1"]
             )
+            and item.shape().visible,
+            apply_shape_state=False,
         )
 
     def label_selection_changed(self):
@@ -5429,6 +5514,10 @@ class LabelingWidget(LabelDialog):
             shape, item.checkState() == Qt.CheckState.Checked
         )
         self._update_select_toggle_button_tooltip()
+        # Visibility is a per-shape edit: mark the frame dirty (and, when
+        # auto-save is enabled, persist it immediately) so the unchecked
+        # state survives frame switches / playback / restart.
+        self.set_dirty()
         if (
             hasattr(self, "navigator_dialog")
             and self.navigator_dialog.isVisible()
@@ -6437,9 +6526,12 @@ class LabelingWidget(LabelDialog):
         except (TypeError, ValueError):
             return
         self._playback_fps = min(max(1, fps), 120)
-        self.playback_timer.setInterval(
-            max(1, int(round(1000 / self._playback_fps)))
-        )
+        # The FPS control drives sequence playback only; loop playback stays
+        # pinned to LOOP_PLAYBACK_FPS, so don't retime a running loop.
+        if self._playback_mode != self.PLAYBACK_LOOP:
+            self.playback_timer.setInterval(
+                max(1, int(round(1000 / self._playback_fps)))
+            )
         if hasattr(self, "playback_control"):
             self.playback_control.set_fps(self._playback_fps)
 
@@ -6612,8 +6704,10 @@ class LabelingWidget(LabelDialog):
         finally:
             self._playback_internal_change = False
 
+        # Loop playback is pinned to real-time (LOOP_PLAYBACK_FPS), not the
+        # FPS spinbox — so it always looks like the actual pullback speed.
         self.playback_timer.start(
-            max(1, int(round(1000 / self._playback_fps)))
+            max(1, int(round(1000 / self.LOOP_PLAYBACK_FPS)))
         )
         self._sync_playback_control(anchor_index)
         self.status(
@@ -7422,6 +7516,7 @@ class LabelingWidget(LabelDialog):
             )
             self.label_list[index].shape().visible = True if value else False
         self._config["show_shapes"] = value
+        self.set_dirty()
         self._update_select_toggle_button_tooltip()
         if (
             hasattr(self, "navigator_dialog")

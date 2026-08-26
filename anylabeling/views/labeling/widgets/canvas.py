@@ -14,7 +14,7 @@ from anylabeling.views.labeling.utils.colormap import label_colormap
 from anylabeling.views.labeling.utils.theme import get_theme
 
 from .. import utils
-from ..shape import Shape
+from ..shape import Shape, _screen_pen_width
 
 CURSOR_DEFAULT = QtCore.Qt.CursorShape.ArrowCursor
 CURSOR_POINT = QtCore.Qt.CursorShape.PointingHandCursor
@@ -1212,8 +1212,8 @@ class Canvas(
                     else shape.line_color
                 )
                 pen = QtGui.QPen(outline_color)
-                pen.setWidth(
-                    max(1, int(round(shape.line_width / Shape.scale)))
+                pen.setWidthF(
+                    _screen_pen_width(shape.line_width, Shape.scale)
                 )
                 if getattr(shape, "difficult", False):
                     pen.setStyle(Qt.PenStyle.DashLine)
@@ -3906,8 +3906,8 @@ class Canvas(
                     else shape.line_color
                 )
                 pen = QtGui.QPen(outline_color)
-                pen.setWidth(
-                    max(1, int(round(shape.line_width / Shape.scale)))
+                pen.setWidthF(
+                    _screen_pen_width(shape.line_width, Shape.scale)
                 )
                 if shape.difficult:
                     pen.setStyle(Qt.PenStyle.DashLine)
@@ -4010,8 +4010,8 @@ class Canvas(
                     else self.current.line_color
                 )
                 pen = QtGui.QPen(color)
-                pen.setWidth(
-                    max(1, int(round(self.current.line_width / Shape.scale)))
+                pen.setWidthF(
+                    _screen_pen_width(self.current.line_width, Shape.scale)
                 )
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)

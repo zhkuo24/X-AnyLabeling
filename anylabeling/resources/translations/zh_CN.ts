@@ -2223,7 +2223,7 @@ Press Enter to search.</source>
     <message>
       <location filename="../../views/labeling/label_widget.py" line="378" />
       <source>Only annotated</source>
-      <translation>仅已标注</translation>
+      <translation>只看已标注</translation>
     </message>
     <message>
       <location filename="../../views/labeling/label_widget.py" line="387" />
@@ -3911,6 +3911,16 @@ This warning will only be shown once. Do you want to continue?</source>
       <location filename="../../views/labeling/label_widget.py" line="6449" />
       <source>Looping frames {start}–{end} around frame {anchor}</source>
       <translation>正在循环播放第 {anchor} 帧附近的第 {start}–{end} 帧</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="1847" />
+      <source>Approve AI Annotations</source>
+      <translation>审核AI通过</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="2604" />
+      <source>Approve AI</source>
+      <translation>审核AI通过</translation>
     </message>
     <message>
       <location filename="../../views/labeling/label_widget.py" line="6492" />

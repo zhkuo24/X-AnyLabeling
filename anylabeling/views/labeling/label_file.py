@@ -27,6 +27,11 @@ class LabelFile:
         self.image_path = None
         self.image_data = None
         self.image_dir = image_dir
+        # Always expose a complete attribute set, even when the instance is
+        # created without a filename (e.g. LabelFile() in save_labels):
+        # callers may read .flags / .other_data before any load() happens.
+        self.flags = {}
+        self.other_data = {}
         if filename is not None:
             self.load(filename)
         self.filename = filename

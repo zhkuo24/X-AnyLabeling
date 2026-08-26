@@ -36,6 +36,7 @@ class TestSettingsSchema(unittest.TestCase):
     def test_defaults_cover_all_keys(self):
         defaults = defaults_map()
         self.assertEqual(set(defaults.keys()), set(SETTINGS_KEYS))
+        self.assertEqual(defaults["shape.line_width"], 2)
 
     def test_included_and_excluded_keys(self):
         expected_keys = {

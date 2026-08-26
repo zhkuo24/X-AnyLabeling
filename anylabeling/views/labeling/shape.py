@@ -18,6 +18,11 @@ DEFAULT_VERTEX_FILL_COLOR = QtGui.QColor(0, 255, 0, 255)  # hovering
 DEFAULT_HVERTEX_FILL_COLOR = QtGui.QColor(255, 255, 255, 255)  # hovering
 
 
+def _screen_pen_width(line_width, scale):
+    """Return a logical pen width that stays constant in screen pixels."""
+    return max(1.0, float(line_width)) / max(float(scale), 1e-6)
+
+
 class Shape:
     """Shape data type"""
 
@@ -45,6 +50,7 @@ class Shape:
         "attributes",
         "kie_linking",
         "locked",
+        "visible",
     ]
 
     # The following class variables influence the drawing of all shape objects.
@@ -150,6 +156,10 @@ class Shape:
             dictData["direction"] = self.direction
         if self.locked:
             dictData["locked"] = True
+        # Persist per-shape visibility (checkbox state) so hidden objects stay
+        # hidden after switching frames or restarting the app.
+        if not self.visible:
+            dictData["visible"] = False
         dictData = {
             **self.other_data,
             **dictData,
@@ -176,6 +186,7 @@ class Shape:
             raise ValueError("kie_linking must be a list of integer pairs")
         self.kie_linking = kie_linking
         self.locked = data.get("locked", False)
+        self.visible = data.get("visible", True)
         if self.shape_type == "rotation":
             self.direction = data.get("direction", 0)
         self.other_data = {k: v for k, v in data.items() if k not in self.KEYS}
@@ -437,9 +448,12 @@ class Shape:
                 self.select_line_color if self.selected else self.line_color
             )
             pen = QtGui.QPen(color)
-            # Try using integer sizes for smoother drawing(?)
-            pen.setWidth(max(1, int(round(self.line_width / self.scale))))
+            pen.setWidthF(_screen_pen_width(self.line_width, self.scale))
             if self.difficult and self.shape_type != "point":
+                pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+            # AI-inferred shapes are drawn with a dashed outline so they
+            # can be visually distinguished from manual annotations.
+            if self.attributes.get("source") == "AI":
                 pen.setStyle(QtCore.Qt.PenStyle.DashLine)
             painter.setPen(pen)
 
@@ -532,8 +546,8 @@ class Shape:
                 painter.drawPath(back_path)
                 painter.setPen(pen)
                 orient_pen = QtGui.QPen(QtGui.QColor(255, 165, 0, 220))
-                orient_pen.setWidth(
-                    max(1, int(round(self.line_width / self.scale)))
+                orient_pen.setWidthF(
+                    _screen_pen_width(self.line_width, self.scale)
                 )
                 painter.setPen(orient_pen)
                 painter.drawLine(self.points[0], self.points[1])
@@ -599,7 +613,9 @@ class Shape:
                     else self.line_color
                 )
                 pen = QtGui.QPen(outline_color)
-                pen.setWidth(max(1, int(round(self.line_width / self.scale))))
+                pen.setWidthF(
+                    _screen_pen_width(self.line_width, self.scale)
+                )
                 painter.setPen(pen)
                 painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(
@@ -628,7 +644,7 @@ class Shape:
 
         color = QtGui.QColor(0, 0, 0)
         pen = QtGui.QPen(color)
-        pen.setWidth(max(1, int(round(self.line_width / self.scale))))
+        pen.setWidthF(_screen_pen_width(self.line_width, self.scale))
         painter.setPen(pen)
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
 
