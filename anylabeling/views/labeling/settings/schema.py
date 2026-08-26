@@ -113,6 +113,7 @@ def _settings_translation_markers() -> None:
         "SettingsDialog", "Brush Simplification Tolerance"
     )
     QCoreApplication.translate("SettingsDialog", "Pencil Point Distance")
+    QCoreApplication.translate("SettingsDialog", "Pencil Smoothing")
     QCoreApplication.translate(
         "SettingsDialog", "Pencil Simplification Tolerance"
     )
@@ -120,6 +121,10 @@ def _settings_translation_markers() -> None:
     QCoreApplication.translate(
         "SettingsDialog",
         "Set the screen-pixel spacing between sampled Pencil points.",
+    )
+    QCoreApplication.translate(
+        "SettingsDialog",
+        "Set adaptive Pencil smoothing strength. Use 0 to disable it.",
     )
     QCoreApplication.translate(
         "SettingsDialog",
@@ -1043,6 +1048,24 @@ def _non_shortcut_fields() -> list[SettingField]:
             description=QT_TRANSLATE_NOOP(
                 SETTINGS_TRANSLATION_CONTEXT,
                 "Set the screen-pixel spacing between sampled Pencil points.",
+            ),
+        ),
+        SettingField(
+            "canvas.pencil.smoothing",
+            QT_TRANSLATE_NOOP(
+                SETTINGS_TRANSLATION_CONTEXT, "Pencil Smoothing"
+            ),
+            "float",
+            "Canvas",
+            "Interaction",
+            "Pencil",
+            minimum=0.0,
+            maximum=1.0,
+            decimals=2,
+            description=QT_TRANSLATE_NOOP(
+                SETTINGS_TRANSLATION_CONTEXT,
+                "Set adaptive Pencil smoothing strength. "
+                "Use 0 to disable it.",
             ),
         ),
         SettingField(

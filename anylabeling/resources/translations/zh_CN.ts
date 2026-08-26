@@ -5790,6 +5790,11 @@ Results have been saved to:
       <translation>手写笔点间距</translation>
     </message>
     <message>
+      <location filename="../../views/labeling/settings/schema.py" line="116" />
+      <source>Pencil Smoothing</source>
+      <translation>手写笔实时平滑</translation>
+    </message>
+    <message>
       <location filename="../../views/labeling/settings/schema.py" line="117" />
       <source>Pencil Simplification Tolerance</source>
       <translation>手写笔简化容差</translation>
@@ -5803,6 +5808,11 @@ Results have been saved to:
       <location filename="../../views/labeling/settings/schema.py" line="122" />
       <source>Set the screen-pixel spacing between sampled Pencil points.</source>
       <translation>设置手写笔采样点之间的屏幕像素间距。</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="127" />
+      <source>Set adaptive Pencil smoothing strength. Use 0 to disable it.</source>
+      <translation>设置手写笔自适应实时平滑强度。设为 0 可禁用。</translation>
     </message>
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="126" />

@@ -899,11 +899,12 @@ class LabelingWidget(LabelDialog):
             self.tr("Create Pencil Contours"),
             self.toggle_pencil_polygon_mode,
             shortcuts["create_pencil_polygon"],
-            "brush_polygon",
+            "pencil_polygon",
             self.tr(
                 "Draw a polygon by pressing, tracing, and releasing a stylus"
             ),
             enabled=False,
+            icon_ext="svg",
         )
         create_rectangle_mode = action(
             self.tr("Create Rectangle"),

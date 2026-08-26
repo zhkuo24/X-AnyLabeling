@@ -127,6 +127,7 @@ canvas:
     max_undo_memory_mb: 128
   pencil:
     point_distance: 8.0  # screen pixel spacing for sampled Pencil contour points
+    smoothing: 0.35  # adaptive low-pass strength; 0 disables live smoothing
     simplify_epsilon: 0.5  # RDP tolerance in image pixels; 0 disables simplification
     close_distance: 30.0  # maximum screen pixel gap allowed for pen-up closure
   cuboid:

@@ -52,6 +52,7 @@ class TestSettingsRuntimeApplier(unittest.TestCase):
     def test_pencil_settings_apply_without_restart(self):
         canvas = SimpleNamespace(
             pencil_point_distance=0.0,
+            pencil_smoothing=0.0,
             pencil_simplify_epsilon_px=0.0,
             pencil_close_distance=0.0,
         )
@@ -61,6 +62,7 @@ class TestSettingsRuntimeApplier(unittest.TestCase):
                 "canvas": {
                     "pencil": {
                         "point_distance": 12.5,
+                        "smoothing": 0.7,
                         "simplify_epsilon": 0.75,
                         "close_distance": 24.0,
                     }
@@ -72,6 +74,7 @@ class TestSettingsRuntimeApplier(unittest.TestCase):
         applier.apply_change("canvas.pencil.point_distance", 12.5)
 
         self.assertEqual(canvas.pencil_point_distance, 12.5)
+        self.assertEqual(canvas.pencil_smoothing, 0.7)
         self.assertEqual(canvas.pencil_simplify_epsilon_px, 0.75)
         self.assertEqual(canvas.pencil_close_distance, 24.0)
 
