@@ -80,13 +80,12 @@ def new_action(
     enabled=True,
     checked=False,
     auto_trigger=False,
-    icon_ext="png",
 ):
     """Create a new action and assign callbacks, shortcuts, etc."""
     action = QtGui.QAction(text, parent)
     if icon is not None:
         action.setIconText(text.replace(" ", "\n"))
-        action.setIcon(new_icon(icon, icon_ext))
+        action.setIcon(new_icon(icon))
     if shortcut is not None:
         if isinstance(shortcut, (list, tuple)):
             action.setShortcuts(shortcut)

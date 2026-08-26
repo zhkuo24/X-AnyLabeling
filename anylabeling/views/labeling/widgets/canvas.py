@@ -264,13 +264,8 @@ class Canvas(
         # samples hover movement after a single starting click.
         self._pencil_mode = False
         self._pencil_stroke_active = False
-        self._pencil_filtered_pos = None
-        self._pencil_close_candidate = False
         self.pencil_point_distance = float(
             self.pencil_config.get("point_distance", 8.0)
-        )
-        self.pencil_smoothing = float(
-            self.pencil_config.get("smoothing", 0.35)
         )
         self.pencil_simplify_epsilon_px = float(
             self.pencil_config.get("simplify_epsilon", 0.5)
@@ -1228,8 +1223,6 @@ class Canvas(
             self.drawing_polygon.emit(False)
         self._pencil_mode = bool(enabled)
         self._pencil_stroke_active = False
-        self._pencil_filtered_pos = None
-        self._pencil_close_candidate = False
         self.update()
 
     def _pencil_bounded_pos(self, pos: QtCore.QPointF) -> QtCore.QPointF:
@@ -1239,35 +1232,6 @@ class Canvas(
         if self.current is not None and self.current.points:
             return self.intersection_point(self.current[-1], pos)
         return QtCore.QPointF(pos)
-
-    def _filter_pencil_pos(self, pos: QtCore.QPointF) -> QtCore.QPointF:
-        """Smooth slow Pencil movement while keeping fast strokes responsive."""
-        pos = QtCore.QPointF(pos)
-        previous = self._pencil_filtered_pos
-        strength = min(1.0, max(0.0, float(self.pencil_smoothing)))
-        if previous is None or strength <= 0.0:
-            self._pencil_filtered_pos = pos
-            return QtCore.QPointF(pos)
-
-        screen_distance = utils.distance(pos - previous) * self.scale
-        response_distance = max(1.0, float(self.pencil_point_distance) * 2.0)
-        speed_response = min(1.0, screen_distance / response_distance)
-        base_alpha = 1.0 - 0.8 * strength
-        alpha = base_alpha + (1.0 - base_alpha) * speed_response
-        filtered = QtCore.QPointF(
-            previous.x() + (pos.x() - previous.x()) * alpha,
-            previous.y() + (pos.y() - previous.y()) * alpha,
-        )
-        self._pencil_filtered_pos = filtered
-        return QtCore.QPointF(filtered)
-
-    def _update_pencil_close_candidate(self, pos: QtCore.QPointF) -> None:
-        self._pencil_close_candidate = bool(
-            self.current is not None
-            and len(self.current.points) >= 3
-            and utils.distance(pos - self.current[0]) * self.scale
-            <= max(0.0, float(self.pencil_close_distance))
-        )
 
     def _begin_pencil_stroke(self, pos: QtCore.QPointF) -> bool:
         """Start or resume a Pencil contour at ``pos``."""
@@ -1280,8 +1244,6 @@ class Canvas(
             return False
 
         pos = self._pencil_bounded_pos(pos)
-        self._pencil_filtered_pos = QtCore.QPointF(pos)
-        self._pencil_close_candidate = False
         if self.current is None:
             self.current = Shape(shape_type="polygon")
             self.current.add_point(pos)
@@ -1302,9 +1264,7 @@ class Canvas(
         if not self._pencil_stroke_active or self.current is None:
             return False
 
-        raw_pos = self._pencil_bounded_pos(pos)
-        self._update_pencil_close_candidate(raw_pos)
-        pos = self._filter_pencil_pos(raw_pos)
+        pos = self._pencil_bounded_pos(pos)
         start = self.current[-1]
         dx = pos.x() - start.x()
         dy = pos.y() - start.y()
@@ -1329,10 +1289,7 @@ class Canvas(
             self.current.add_point(pos)
             added = True
 
-        preview_pos = (
-            self.current[0] if self._pencil_close_candidate else pos
-        )
-        self.line.points = [self.current[-1], preview_pos]
+        self.line.points = [self.current[-1], pos]
         self.update()
         return added
 
@@ -1369,69 +1326,21 @@ class Canvas(
         self._pencil_stroke_active = False
         if len(self.current.points) < 3:
             self.current = None
-            self._pencil_filtered_pos = None
-            self._pencil_close_candidate = False
             self.set_hiding(False)
             self.drawing_polygon.emit(False)
             self.update()
             return True
 
-        if not self._pencil_close_candidate:
+        gap = utils.distance(self.current[-1] - self.current[0]) * self.scale
+        if gap > max(0.0, float(self.pencil_close_distance)):
             self.line.points = [self.current[-1], self.current[0]]
             self.pencil_stroke_incomplete.emit()
             self.update()
             return True
 
         self._simplify_pencil_contour()
-        self._pencil_filtered_pos = None
-        self._pencil_close_candidate = False
         self.finalise()
         return True
-
-    def _paint_pencil_closure_feedback(self, painter: QtGui.QPainter) -> None:
-        """Show the Pencil closure target and its active snap state."""
-        if (
-            not self._pencil_mode
-            or self.current is None
-            or len(self.current.points) < 3
-        ):
-            return
-
-        painter.save()
-        try:
-            painter.setOpacity(1.0)
-            color = QtGui.QColor(
-                "#24C875" if self._pencil_close_candidate else "#F5A623"
-            )
-            width = max(1.5 / max(self.scale, 1e-6), 0.5)
-            pen = QtGui.QPen(
-                color,
-                width,
-                (
-                    Qt.PenStyle.SolidLine
-                    if self._pencil_close_candidate
-                    else Qt.PenStyle.DashLine
-                ),
-            )
-            painter.setPen(pen)
-            painter.setBrush(
-                QtGui.QColor(36, 200, 117, 70)
-                if self._pencil_close_candidate
-                else Qt.BrushStyle.NoBrush
-            )
-            radius = max(
-                1.0,
-                float(self.pencil_close_distance) / max(self.scale, 1e-6),
-            )
-            painter.drawEllipse(self.current[0], radius, radius)
-
-            center_radius = 4.0 / max(self.scale, 1e-6)
-            painter.setBrush(color)
-            painter.drawEllipse(
-                self.current[0], center_radius, center_radius
-            )
-        finally:
-            painter.restore()
 
     def _pencil_mouse_press(self, ev, pos: QtCore.QPointF) -> bool:
         if (
@@ -4304,7 +4213,6 @@ class Canvas(
         if self.current:
             self.current.paint(p)
             self.line.paint(p)
-            self._paint_pencil_closure_feedback(p)
 
             if (
                 self.create_mode == "quadrilateral"
@@ -4860,8 +4768,6 @@ class Canvas(
         assert self.current
         self._brush_drawing = False
         self._pencil_stroke_active = False
-        self._pencil_filtered_pos = None
-        self._pencil_close_candidate = False
         if (
             self.is_auto_labeling
             and self.auto_labeling_mode != AutoLabelingMode.NONE
@@ -5279,8 +5185,6 @@ class Canvas(
                 self.current = None
                 self._brush_drawing = False
                 self._pencil_stroke_active = False
-                self._pencil_filtered_pos = None
-                self._pencil_close_candidate = False
                 self.drawing_polygon.emit(False)
                 self.update()
             elif key == QtCore.Qt.Key.Key_Backspace and self.current:
@@ -5293,8 +5197,6 @@ class Canvas(
                         self.current = None
                         self._brush_drawing = False
                         self._pencil_stroke_active = False
-                        self._pencil_filtered_pos = None
-                        self._pencil_close_candidate = False
                         self.drawing_polygon.emit(False)
                         self.update()
             elif key == QtCore.Qt.Key.Key_Return and self.can_close_shape():
@@ -5430,8 +5332,6 @@ class Canvas(
             self.current = None
             self._brush_drawing = False
             self._pencil_stroke_active = False
-            self._pencil_filtered_pos = None
-            self._pencil_close_candidate = False
             self.drawing_polygon.emit(False)
         self.update()
 
@@ -5439,8 +5339,6 @@ class Canvas(
         """Load pixmap"""
         self.cancel_brush_mode()
         self._pencil_stroke_active = False
-        self._pencil_filtered_pos = None
-        self._pencil_close_candidate = False
         self.pixmap = pixmap
         if clear_shapes:
             self.shapes = []
@@ -5468,8 +5366,6 @@ class Canvas(
         self.current = None
         self._brush_drawing = False
         self._pencil_stroke_active = False
-        self._pencil_filtered_pos = None
-        self._pencil_close_candidate = False
         self.h_shape = None
         self.h_vertex = None
         self.h_edge = None

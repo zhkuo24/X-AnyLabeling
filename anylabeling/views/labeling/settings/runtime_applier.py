@@ -356,7 +356,6 @@ class SettingsRuntimeApplier:
         self._widget.canvas.pencil_point_distance = float(
             pencil["point_distance"]
         )
-        self._widget.canvas.pencil_smoothing = float(pencil["smoothing"])
         self._widget.canvas.pencil_simplify_epsilon_px = float(
             pencil["simplify_epsilon"]
         )

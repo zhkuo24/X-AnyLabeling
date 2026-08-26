@@ -5782,11 +5782,6 @@ Results have been saved to:
       <translation type="unfinished" />
     </message>
     <message>
-      <location filename="../../views/labeling/settings/schema.py" line="116" />
-      <source>Pencil Smoothing</source>
-      <translation type="unfinished" />
-    </message>
-    <message>
       <location filename="../../views/labeling/settings/schema.py" line="117" />
       <source>Pencil Simplification Tolerance</source>
       <translation type="unfinished" />
@@ -5799,11 +5794,6 @@ Results have been saved to:
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="122" />
       <source>Set the screen-pixel spacing between sampled Pencil points.</source>
-      <translation type="unfinished" />
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="127" />
-      <source>Set adaptive Pencil smoothing strength. Use 0 to disable it.</source>
       <translation type="unfinished" />
     </message>
     <message>

@@ -27,7 +27,6 @@ class TestCanvasPencilDrawing(unittest.TestCase):
             parent=None,
             pencil={
                 "point_distance": 10.0,
-                "smoothing": 0.65,
                 "simplify_epsilon": 0.0,
                 "close_distance": 15.0,
             },
@@ -123,62 +122,6 @@ class TestCanvasPencilDrawing(unittest.TestCase):
 
         xs = [round(point.x()) for point in self.canvas.current.points]
         self.assertEqual(xs, [10, 20, 30, 40, 50])
-
-    def test_adaptive_smoothing_damps_slow_jitter_but_tracks_fast_moves(self):
-        self.canvas.pencil_smoothing = 1.0
-        self.canvas._pencil_filtered_pos = QtCore.QPointF(10.0, 10.0)
-
-        slow_raw = QtCore.QPointF(12.0, 11.0)
-        slow_filtered = self.canvas._filter_pencil_pos(slow_raw)
-        self.assertLess(
-            (slow_filtered - QtCore.QPointF(10.0, 10.0)).manhattanLength(),
-            (slow_raw - QtCore.QPointF(10.0, 10.0)).manhattanLength(),
-        )
-
-        fast_raw = QtCore.QPointF(80.0, 80.0)
-        fast_filtered = self.canvas._filter_pencil_pos(fast_raw)
-        self.assertAlmostEqual(fast_filtered.x(), fast_raw.x())
-        self.assertAlmostEqual(fast_filtered.y(), fast_raw.y())
-
-    def test_close_target_snaps_preview_and_tracks_candidate_state(self):
-        self.press((10.0, 10.0))
-        self.move((60.0, 10.0))
-        self.move((60.0, 60.0))
-        self.move((12.0, 12.0))
-
-        self.assertTrue(self.canvas._pencil_close_candidate)
-        self.assertEqual(self.canvas.line[1], self.canvas.current[0])
-
-        self.move((60.0, 60.0))
-
-        self.assertFalse(self.canvas._pencil_close_candidate)
-        self.assertNotEqual(self.canvas.line[1], self.canvas.current[0])
-
-    def test_close_target_feedback_paints_on_canvas(self):
-        self.canvas.current = Shape(shape_type="polygon")
-        self.canvas.current.points = [
-            QtCore.QPointF(40.0, 40.0),
-            QtCore.QPointF(70.0, 40.0),
-            QtCore.QPointF(70.0, 70.0),
-        ]
-        image = QtGui.QImage(
-            100,
-            100,
-            QtGui.QImage.Format.Format_ARGB32_Premultiplied,
-        )
-        image.fill(QtCore.Qt.GlobalColor.transparent)
-        painter = QtGui.QPainter(image)
-        try:
-            self.canvas._paint_pencil_closure_feedback(painter)
-        finally:
-            painter.end()
-
-        painted_pixels = sum(
-            image.pixelColor(x, y).alpha() > 0
-            for x in range(image.width())
-            for y in range(image.height())
-        )
-        self.assertGreater(painted_pixels, 0)
 
     def test_move_without_press_does_not_start_contour(self):
         self.move((50.0, 50.0))

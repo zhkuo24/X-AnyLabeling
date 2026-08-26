@@ -184,17 +184,6 @@ class TestSettingsController(unittest.TestCase):
             schedule_save=False,
         )
         self.controller.update_field(
-            "canvas.pencil.smoothing",
-            0.65,
-            schedule_save=False,
-        )
-        with self.assertRaises(SettingsValidationError):
-            self.controller.update_field(
-                "canvas.pencil.smoothing",
-                1.1,
-                schedule_save=False,
-            )
-        self.controller.update_field(
             "canvas.pencil.simplify_epsilon",
             0.5,
             schedule_save=False,
