@@ -78,6 +78,7 @@ class Canvas(
     # Emitted when brush-edit mode is toggled on/off (keeps the UI in sync).
     brush_mode_changed = QtCore.pyqtSignal(bool)
     brush_history_changed = QtCore.pyqtSignal(bool)
+    pencil_stroke_incomplete = QtCore.pyqtSignal()
 
     CREATE, EDIT = 0, 1
 
@@ -114,6 +115,7 @@ class Canvas(
         self.rotation_config = kwargs.pop("rotation", {})
         self.mask_config = kwargs.pop("mask", {})
         self.brush_config = kwargs.pop("brush", {})
+        self.pencil_config = kwargs.pop("pencil", {})
         self.cuboid_config = kwargs.pop("cuboid", {})
         self.parent = kwargs.pop("parent")
         super().__init__(*args, **kwargs)
@@ -255,6 +257,21 @@ class Canvas(
         self._brush_drawing = False
         self.brush_point_distance = self.brush_config.get(
             "point_distance", 25.0
+        )
+
+        # Pencil contour mode (press -> draw -> release).  It deliberately
+        # remains separate from brush polygon mode, whose existing interaction
+        # samples hover movement after a single starting click.
+        self._pencil_mode = False
+        self._pencil_stroke_active = False
+        self.pencil_point_distance = float(
+            self.pencil_config.get("point_distance", 8.0)
+        )
+        self.pencil_simplify_epsilon_px = float(
+            self.pencil_config.get("simplify_epsilon", 0.5)
+        )
+        self.pencil_close_distance = float(
+            self.pencil_config.get("close_distance", 30.0)
         )
 
         # Brush edit mode (refine a selected shape by painting/erasing).
@@ -1193,6 +1210,166 @@ class Canvas(
             utils.distance_to_line(start, [self.current[-1], pos]) < threshold
         )
 
+    def set_pencil_mode(self, enabled: bool) -> None:
+        """Enable or disable press-and-draw Pencil polygon creation."""
+        if (
+            not enabled
+            and self._pencil_mode
+            and self.current is not None
+            and not self.current.is_closed()
+        ):
+            self.current = None
+            self.set_hiding(False)
+            self.drawing_polygon.emit(False)
+        self._pencil_mode = bool(enabled)
+        self._pencil_stroke_active = False
+        self.update()
+
+    def _pencil_bounded_pos(self, pos: QtCore.QPointF) -> QtCore.QPointF:
+        """Clamp an active Pencil stroke to the image boundary."""
+        if not self.out_off_pixmap(pos):
+            return QtCore.QPointF(pos)
+        if self.current is not None and self.current.points:
+            return self.intersection_point(self.current[-1], pos)
+        return QtCore.QPointF(pos)
+
+    def _begin_pencil_stroke(self, pos: QtCore.QPointF) -> bool:
+        """Start or resume a Pencil contour at ``pos``."""
+        if (
+            not self._pencil_mode
+            or not self.drawing()
+            or self.create_mode != "polygon"
+            or self.out_off_pixmap(pos)
+        ):
+            return False
+
+        pos = self._pencil_bounded_pos(pos)
+        if self.current is None:
+            self.current = Shape(shape_type="polygon")
+            self.current.add_point(pos)
+            self.line.points = [pos, pos]
+            self.set_hiding()
+            self.drawing_polygon.emit(True)
+        elif utils.distance(pos - self.current[-1]) > 1e-6:
+            self.current.add_point(pos)
+            self.line.points = [self.current[-1], self.current[-1]]
+
+        self._pencil_stroke_active = True
+        self.override_cursor(CURSOR_DRAW)
+        self.update()
+        return True
+
+    def _append_pencil_point(self, pos: QtCore.QPointF, force=False) -> bool:
+        """Append evenly spaced image points to the active Pencil stroke."""
+        if not self._pencil_stroke_active or self.current is None:
+            return False
+
+        pos = self._pencil_bounded_pos(pos)
+        start = self.current[-1]
+        dx = pos.x() - start.x()
+        dy = pos.y() - start.y()
+        distance = float((dx * dx + dy * dy) ** 0.5)
+        if distance <= 1e-6:
+            return False
+
+        image_step = max(
+            1e-6, float(self.pencil_point_distance) / max(self.scale, 1e-6)
+        )
+        steps = int(distance // image_step)
+        added = False
+        for index in range(1, steps + 1):
+            ratio = min(1.0, index * image_step / distance)
+            point = QtCore.QPointF(
+                start.x() + dx * ratio,
+                start.y() + dy * ratio,
+            )
+            self.current.add_point(point)
+            added = True
+        if force and utils.distance(pos - self.current[-1]) > 1e-6:
+            self.current.add_point(pos)
+            added = True
+
+        self.line.points = [self.current[-1], pos]
+        self.update()
+        return added
+
+    def _simplify_pencil_contour(self) -> None:
+        """Apply bounded RDP simplification to the current Pencil contour."""
+        if (
+            self.current is None
+            or len(self.current.points) < 3
+            or self.pencil_simplify_epsilon_px <= 0
+        ):
+            return
+        contour = np.array(
+            [[point.x(), point.y()] for point in self.current.points],
+            dtype=np.float32,
+        ).reshape((-1, 1, 2))
+        simplified = cv2.approxPolyDP(
+            contour,
+            float(self.pencil_simplify_epsilon_px),
+            True,
+        )
+        if simplified is None or len(simplified) < 3:
+            return
+        self.current.points = [
+            QtCore.QPointF(float(x), float(y))
+            for x, y in simplified.reshape(-1, 2)
+        ]
+
+    def _end_pencil_stroke(self, pos: QtCore.QPointF) -> bool:
+        """Finish a Pencil stroke, closing it only when the gap is safe."""
+        if not self._pencil_stroke_active or self.current is None:
+            return False
+
+        self._append_pencil_point(pos, force=True)
+        self._pencil_stroke_active = False
+        if len(self.current.points) < 3:
+            self.current = None
+            self.set_hiding(False)
+            self.drawing_polygon.emit(False)
+            self.update()
+            return True
+
+        gap = utils.distance(self.current[-1] - self.current[0]) * self.scale
+        if gap > max(0.0, float(self.pencil_close_distance)):
+            self.line.points = [self.current[-1], self.current[0]]
+            self.pencil_stroke_incomplete.emit()
+            self.update()
+            return True
+
+        self._simplify_pencil_contour()
+        self.finalise()
+        return True
+
+    def _pencil_mouse_press(self, ev, pos: QtCore.QPointF) -> bool:
+        if (
+            not self._pencil_mode
+            or ev.button() != QtCore.Qt.MouseButton.LeftButton
+        ):
+            return False
+        self._begin_pencil_stroke(pos)
+        ev.accept()
+        return True
+
+    def _pencil_mouse_move(self, ev, pos: QtCore.QPointF) -> bool:
+        if not self._pencil_mode:
+            return False
+        if self._pencil_stroke_active:
+            self._append_pencil_point(pos)
+        ev.accept()
+        return True
+
+    def _pencil_mouse_release(self, ev, pos: QtCore.QPointF) -> bool:
+        if (
+            not self._pencil_mode
+            or ev.button() != QtCore.Qt.MouseButton.LeftButton
+        ):
+            return False
+        self._end_pencil_stroke(pos)
+        ev.accept()
+        return True
+
     def _paint_brush_overlays(self, p: QtGui.QPainter) -> None:
         """Paint live mask overlays for shapes being brush-edited.
 
@@ -1746,6 +1923,9 @@ class Canvas(
 
         if self.is_brush_mode and self.editing():
             self._brush_mouse_move(ev, pos)
+            return
+
+        if self._pencil_mouse_move(ev, pos):
             return
 
         if (
@@ -2344,6 +2524,9 @@ class Canvas(
         if self.is_brush_mode and self._brush_mouse_press(ev, pos):
             return
 
+        if self._pencil_mouse_press(ev, pos):
+            return
+
         if ev.button() == QtCore.Qt.MouseButton.LeftButton:
             if (
                 self._space_pan_suppress_until_release
@@ -2610,6 +2793,10 @@ class Canvas(
         if self.is_brush_mode and self._brush_mouse_release(ev):
             return
 
+        pos = self.transform_pos(ev.position())
+        if self._pencil_mouse_release(ev, pos):
+            return
+
         if ev.button() == QtCore.Qt.MouseButton.RightButton:
             menu = self.menus[len(self.selected_shapes_copy) > 0]
             self.restore_cursor()
@@ -2641,6 +2828,34 @@ class Canvas(
                     )
 
         self.store_moving_shape()
+
+    def tabletEvent(self, ev):
+        """Handle native stylus events for Pencil contour creation.
+
+        Accepted tablet events are not translated into duplicate mouse events
+        by Qt. When a Sidecar or tablet driver only exposes mouse events, the
+        normal mouse handlers provide the same interaction.
+        """
+        if not self._pencil_mode or self.is_loading:
+            ev.ignore()
+            return
+
+        pos = self.transform_pos(ev.position())
+        event_type = ev.type()
+        handled = False
+        if event_type == QtCore.QEvent.Type.TabletPress:
+            handled = self._begin_pencil_stroke(pos)
+        elif event_type == QtCore.QEvent.Type.TabletMove:
+            if self._pencil_stroke_active:
+                self._append_pencil_point(pos)
+                handled = True
+        elif event_type == QtCore.QEvent.Type.TabletRelease:
+            handled = self._end_pencil_stroke(pos)
+
+        if handled:
+            ev.accept()
+        else:
+            ev.ignore()
 
     def end_move(self, copy):
         """End of move"""
@@ -4552,6 +4767,7 @@ class Canvas(
         """Finish drawing for a shape"""
         assert self.current
         self._brush_drawing = False
+        self._pencil_stroke_active = False
         if (
             self.is_auto_labeling
             and self.auto_labeling_mode != AutoLabelingMode.NONE
@@ -4968,6 +5184,7 @@ class Canvas(
             if key == QtCore.Qt.Key.Key_Escape and self.current:
                 self.current = None
                 self._brush_drawing = False
+                self._pencil_stroke_active = False
                 self.drawing_polygon.emit(False)
                 self.update()
             elif key == QtCore.Qt.Key.Key_Backspace and self.current:
@@ -4979,6 +5196,7 @@ class Canvas(
                     elif len(self.current.points) == 1:
                         self.current = None
                         self._brush_drawing = False
+                        self._pencil_stroke_active = False
                         self.drawing_polygon.emit(False)
                         self.update()
             elif key == QtCore.Qt.Key.Key_Return and self.can_close_shape():
@@ -5113,12 +5331,14 @@ class Canvas(
         else:
             self.current = None
             self._brush_drawing = False
+            self._pencil_stroke_active = False
             self.drawing_polygon.emit(False)
         self.update()
 
     def load_pixmap(self, pixmap, clear_shapes=True):
         """Load pixmap"""
         self.cancel_brush_mode()
+        self._pencil_stroke_active = False
         self.pixmap = pixmap
         if clear_shapes:
             self.shapes = []
@@ -5145,6 +5365,7 @@ class Canvas(
         self.store_shapes()
         self.current = None
         self._brush_drawing = False
+        self._pencil_stroke_active = False
         self.h_shape = None
         self.h_vertex = None
         self.h_edge = None

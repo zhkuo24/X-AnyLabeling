@@ -545,6 +545,7 @@ class LabelingWidget(LabelDialog):
             rotation=self._config["canvas"].get("rotation", {}),
             mask=self._config["canvas"].get("mask", {}),
             brush=self._config["canvas"].get("brush", {}),
+            pencil=self._config["canvas"].get("pencil", {}),
             cuboid=self._config["canvas"].get("cuboid", {}),
             double_click_edit_label=self._config["canvas"].get(
                 "double_click_edit_label", True
@@ -619,6 +620,15 @@ class LabelingWidget(LabelDialog):
         self.canvas.brush_mode_changed.connect(self.on_brush_mode_changed)
         self.canvas.brush_history_changed.connect(
             lambda can_undo: self.actions.undo.setEnabled(can_undo)
+        )
+        self.canvas.pencil_stroke_incomplete.connect(
+            lambda: self.status(
+                self.tr(
+                    "Pencil contour is too far from its start; continue "
+                    "drawing or press Esc to cancel"
+                ),
+                5000,
+            )
         )
         # [Feature] support for automatically switching to editing mode
         # when the cursor moves over an object
@@ -883,6 +893,16 @@ class LabelingWidget(LabelDialog):
             shortcuts["create_brush_polygon"],
             "brush_polygon",
             self.tr("Toggle brush mode for drawing polygons"),
+            enabled=False,
+        )
+        create_pencil_polygon_mode = action(
+            self.tr("Create Pencil Contours"),
+            self.toggle_pencil_polygon_mode,
+            shortcuts["create_pencil_polygon"],
+            "brush_polygon",
+            self.tr(
+                "Draw a polygon by pressing, tracing, and releasing a stylus"
+            ),
             enabled=False,
         )
         create_rectangle_mode = action(
@@ -1942,6 +1962,7 @@ class LabelingWidget(LabelDialog):
             remove_point=remove_point,
             create_mode=create_mode,
             create_brush_polygon_mode=create_brush_polygon_mode,
+            create_pencil_polygon_mode=create_pencil_polygon_mode,
             edit_mode=edit_mode,
             edit_brush_mode=edit_brush_mode,
             create_rectangle_mode=create_rectangle_mode,
@@ -2075,6 +2096,7 @@ class LabelingWidget(LabelDialog):
             menu=(
                 create_mode,
                 create_brush_polygon_mode,
+                create_pencil_polygon_mode,
                 create_rectangle_mode,
                 create_cuboid_mode,
                 create_rotation_mode,
@@ -2104,6 +2126,7 @@ class LabelingWidget(LabelDialog):
                 close,
                 create_mode,
                 create_brush_polygon_mode,
+                create_pencil_polygon_mode,
                 create_rectangle_mode,
                 create_cuboid_mode,
                 create_rotation_mode,
@@ -2371,6 +2394,7 @@ class LabelingWidget(LabelDialog):
             None,
             create_mode,
             self.actions.create_brush_polygon_mode,
+            self.actions.create_pencil_polygon_mode,
             self.actions.create_rectangle_mode,
             self.actions.create_cuboid_mode,
             self.actions.create_rotation_mode,
@@ -3063,6 +3087,7 @@ class LabelingWidget(LabelDialog):
         actions = (
             self.actions.create_mode,
             self.actions.create_brush_polygon_mode,
+            self.actions.create_pencil_polygon_mode,
             self.actions.create_rectangle_mode,
             self.actions.create_cuboid_mode,
             self.actions.create_rotation_mode,
@@ -3141,6 +3166,7 @@ class LabelingWidget(LabelDialog):
         self.actions.union_selection.setEnabled(False)
         self.actions.create_mode.setEnabled(True)
         self.actions.create_brush_polygon_mode.setEnabled(True)
+        self.actions.create_pencil_polygon_mode.setEnabled(True)
         self.actions.create_rectangle_mode.setEnabled(True)
         self.actions.create_cuboid_mode.setEnabled(True)
         self.actions.create_rotation_mode.setEnabled(True)
@@ -3813,9 +3839,11 @@ class LabelingWidget(LabelDialog):
         self.canvas.set_editing(edit)
         self.canvas.create_mode = create_mode
         self.canvas._brush_drawing = False
+        self.canvas.set_pencil_mode(False)
         if edit:
             self.actions.create_mode.setEnabled(True)
             self.actions.create_brush_polygon_mode.setEnabled(True)
+            self.actions.create_pencil_polygon_mode.setEnabled(True)
             self.actions.create_rectangle_mode.setEnabled(True)
             self.actions.create_cuboid_mode.setEnabled(True)
             self.actions.create_rotation_mode.setEnabled(True)
@@ -3852,6 +3880,7 @@ class LabelingWidget(LabelDialog):
                 raise ValueError(f"Unsupported create_mode: {create_mode}")
             self.actions.create_mode.setEnabled(True)
             self.actions.create_brush_polygon_mode.setEnabled(True)
+            self.actions.create_pencil_polygon_mode.setEnabled(True)
             self.actions.create_rectangle_mode.setEnabled(True)
             self.actions.create_cuboid_mode.setEnabled(True)
             self.actions.create_rotation_mode.setEnabled(True)
@@ -3877,6 +3906,21 @@ class LabelingWidget(LabelDialog):
         self.canvas._brush_drawing = True
         self.actions.create_mode.setEnabled(True)
         self.actions.create_brush_polygon_mode.setEnabled(False)
+
+    def toggle_pencil_polygon_mode(self):
+        """Toggle press-and-draw Pencil contour creation."""
+        if (
+            self.canvas.drawing()
+            and self.canvas.create_mode == "polygon"
+            and self.canvas._pencil_mode
+        ):
+            self.toggle_draw_mode(True)
+            return
+        self.toggle_draw_mode(False, create_mode="polygon")
+        self.canvas.set_pencil_mode(True)
+        self.actions.create_mode.setEnabled(True)
+        self.actions.create_brush_polygon_mode.setEnabled(True)
+        self.actions.create_pencil_polygon_mode.setEnabled(False)
 
     def set_edit_mode(self):
         # Disable auto labeling

@@ -83,6 +83,7 @@ class SettingsRuntimeApplier:
             "shortcuts.show_navigator": self._widget.actions.show_navigator,
             "shortcuts.create_polygon": self._widget.actions.create_mode,
             "shortcuts.create_brush_polygon": self._widget.actions.create_brush_polygon_mode,
+            "shortcuts.create_pencil_polygon": self._widget.actions.create_pencil_polygon_mode,
             "shortcuts.create_rectangle": self._widget.actions.create_rectangle_mode,
             "shortcuts.create_cuboid": self._widget.actions.create_cuboid_mode,
             "shortcuts.create_rotation": self._widget.actions.create_rotation_mode,
@@ -231,6 +232,9 @@ class SettingsRuntimeApplier:
         if key.startswith("canvas.brush."):
             self.apply_canvas_brush()
             return
+        if key.startswith("canvas.pencil."):
+            self.apply_canvas_pencil()
+            return
         if key.startswith("canvas.attributes."):
             self.apply_canvas_attributes()
             return
@@ -345,6 +349,18 @@ class SettingsRuntimeApplier:
         )
         self._widget.canvas.brush_simplify_epsilon_px = float(
             brush["simplify_epsilon"]
+        )
+
+    def apply_canvas_pencil(self) -> None:
+        pencil = self._widget._config["canvas"]["pencil"]
+        self._widget.canvas.pencil_point_distance = float(
+            pencil["point_distance"]
+        )
+        self._widget.canvas.pencil_simplify_epsilon_px = float(
+            pencil["simplify_epsilon"]
+        )
+        self._widget.canvas.pencil_close_distance = float(
+            pencil["close_distance"]
         )
 
     def apply_canvas_attributes(self) -> None:

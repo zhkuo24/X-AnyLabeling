@@ -2495,6 +2495,21 @@ Enter キーを押して検索します。</translation>
       <translation>ポリゴン描画のブラシモードを切り替え</translation>
     </message>
     <message>
+      <location filename="../../views/labeling/label_widget.py" line="627" />
+      <source>Pencil contour is too far from its start; continue drawing or press Esc to cancel</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="899" />
+      <source>Create Pencil Contours</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="904" />
+      <source>Draw a polygon by pressing, tracing, and releasing a stylus</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
       <location filename="../../views/labeling/label_widget.py" line="807" />
       <source>Create Rectangle</source>
       <translation>矩形を作成</translation>
@@ -5758,6 +5773,36 @@ Results have been saved to:
       <location filename="../../views/labeling/settings/schema.py" line="112" />
       <source>Brush Simplification Tolerance</source>
       <translation>ブラシ簡略化許容値</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="115" />
+      <source>Pencil Point Distance</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="117" />
+      <source>Pencil Simplification Tolerance</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="119" />
+      <source>Pencil Close Distance</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="122" />
+      <source>Set the screen-pixel spacing between sampled Pencil points.</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="126" />
+      <source>Set Pencil contour RDP tolerance in image pixels. Use 0 to preserve all sampled points.</source>
+      <translation type="unfinished" />
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="132" />
+      <source>Set the maximum screen-pixel gap allowed when closing a Pencil contour on release.</source>
+      <translation type="unfinished" />
     </message>
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="115" />
