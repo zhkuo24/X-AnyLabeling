@@ -121,14 +121,10 @@ canvas:
     large_increment: 1.0  # degrees, corresponds to Z/V keys
     small_increment: 0.1  # degrees, corresponds to X/C keys
   brush:
-    point_distance: 25.0  # minimum screen pixel distance between auto-added points in brush drawing mode
-    simplify_epsilon: 2.0
+    point_distance: 10.0  # minimum screen pixel distance between auto-added points in brush drawing mode
+    simplify_epsilon: 1.0
     max_undo_steps: 30
     max_undo_memory_mb: 128
-  pencil:
-    point_distance: 8.0  # screen pixel spacing for sampled Pencil contour points
-    simplify_epsilon: 0.5  # RDP tolerance in image pixels; 0 disables simplification
-    close_distance: 30.0  # maximum screen pixel gap allowed for pen-up closure
   cuboid:
     default_depth_vector: [24.0, -24.0]
     min_depth: 5.0
@@ -167,7 +163,6 @@ shortcuts:
 
   create_polygon: P
   create_brush_polygon: Ctrl+N
-  create_pencil_polygon: Ctrl+Alt+N
   create_rectangle: R
   create_cuboid: Ctrl+R
   create_rotation: O

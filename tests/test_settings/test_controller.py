@@ -179,28 +179,6 @@ class TestSettingsController(unittest.TestCase):
             )
 
         self.controller.update_field(
-            "canvas.pencil.point_distance",
-            8.0,
-            schedule_save=False,
-        )
-        self.controller.update_field(
-            "canvas.pencil.simplify_epsilon",
-            0.5,
-            schedule_save=False,
-        )
-        self.controller.update_field(
-            "canvas.pencil.close_distance",
-            30.0,
-            schedule_save=False,
-        )
-        with self.assertRaises(SettingsValidationError):
-            self.controller.update_field(
-                "canvas.pencil.close_distance",
-                0.0,
-                schedule_save=False,
-            )
-
-        self.controller.update_field(
             "canvas.crosshair.color",
             "#1a2b3c",
             schedule_save=False,

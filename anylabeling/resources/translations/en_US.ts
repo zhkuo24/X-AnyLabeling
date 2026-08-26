@@ -2479,21 +2479,6 @@ Press Enter to search.</source>
       <translation>Toggle brush mode for drawing polygons</translation>
     </message>
     <message>
-      <location filename="../../views/labeling/label_widget.py" line="627" />
-      <source>Pencil contour is too far from its start; continue drawing or press Esc to cancel</source>
-      <translation>Pencil contour is too far from its start; continue drawing or press Esc to cancel</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/label_widget.py" line="899" />
-      <source>Create Pencil Contours</source>
-      <translation>Create Pencil Contours</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/label_widget.py" line="904" />
-      <source>Draw a polygon by pressing, tracing, and releasing a stylus</source>
-      <translation>Draw a polygon by pressing, tracing, and releasing a stylus</translation>
-    </message>
-    <message>
       <location filename="../../views/labeling/label_widget.py" line="807" />
       <source>Create Rectangle</source>
       <translation>Create Rectangle</translation>
@@ -5751,36 +5736,6 @@ Results have been saved to:
       <location filename="../../views/labeling/settings/schema.py" line="112" />
       <source>Brush Simplification Tolerance</source>
       <translation type="unfinished" />
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="115" />
-      <source>Pencil Point Distance</source>
-      <translation>Pencil Point Distance</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="117" />
-      <source>Pencil Simplification Tolerance</source>
-      <translation>Pencil Simplification Tolerance</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="119" />
-      <source>Pencil Close Distance</source>
-      <translation>Pencil Close Distance</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="122" />
-      <source>Set the screen-pixel spacing between sampled Pencil points.</source>
-      <translation>Set the screen-pixel spacing between sampled Pencil points.</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="126" />
-      <source>Set Pencil contour RDP tolerance in image pixels. Use 0 to preserve all sampled points.</source>
-      <translation>Set Pencil contour RDP tolerance in image pixels. Use 0 to preserve all sampled points.</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="132" />
-      <source>Set the maximum screen-pixel gap allowed when closing a Pencil contour on release.</source>
-      <translation>Set the maximum screen-pixel gap allowed when closing a Pencil contour on release.</translation>
     </message>
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="115" />

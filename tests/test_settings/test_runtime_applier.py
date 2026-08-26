@@ -1,6 +1,5 @@
 import os
 import unittest
-from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -48,32 +47,6 @@ class TestSettingsRuntimeApplier(unittest.TestCase):
         applier.apply_change("font_family", None)
         self.app.processEvents()
         self.assertEqual(self.app.font().family(), self.original_font.family())
-
-    def test_pencil_settings_apply_without_restart(self):
-        canvas = SimpleNamespace(
-            pencil_point_distance=0.0,
-            pencil_simplify_epsilon_px=0.0,
-            pencil_close_distance=0.0,
-        )
-        widget = SimpleNamespace(
-            canvas=canvas,
-            _config={
-                "canvas": {
-                    "pencil": {
-                        "point_distance": 12.5,
-                        "simplify_epsilon": 0.75,
-                        "close_distance": 24.0,
-                    }
-                }
-            },
-        )
-        applier = SettingsRuntimeApplier(widget)
-
-        applier.apply_change("canvas.pencil.point_distance", 12.5)
-
-        self.assertEqual(canvas.pencil_point_distance, 12.5)
-        self.assertEqual(canvas.pencil_simplify_epsilon_px, 0.75)
-        self.assertEqual(canvas.pencil_close_distance, 24.0)
 
 
 if __name__ == "__main__":

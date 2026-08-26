@@ -79,3 +79,19 @@ class TestCanvasBrushDrawing(unittest.TestCase):
         self.assertIsNone(self.canvas.current)
         self.assertEqual(len(self.canvas.shapes), 1)
         self.assertTrue(self.canvas.shapes[0].is_closed())
+
+    def test_freehand_polygon_uses_configured_rdp_simplification(self):
+        self.canvas.brush_simplify_epsilon_px = 1.0
+        self.canvas.current.points = [
+            QtCore.QPointF(10.0, 10.0),
+            QtCore.QPointF(20.0, 10.2),
+            QtCore.QPointF(30.0, 9.8),
+            QtCore.QPointF(40.0, 10.0),
+            QtCore.QPointF(40.0, 40.0),
+            QtCore.QPointF(10.0, 40.0),
+        ]
+
+        self.canvas._simplify_brush_drawing_contour()
+
+        self.assertLess(len(self.canvas.current.points), 6)
+        self.assertGreaterEqual(len(self.canvas.current.points), 3)

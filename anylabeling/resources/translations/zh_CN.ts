@@ -2495,21 +2495,6 @@ Press Enter to search.</source>
       <translation>切换画笔模式绘制多边形</translation>
     </message>
     <message>
-      <location filename="../../views/labeling/label_widget.py" line="627" />
-      <source>Pencil contour is too far from its start; continue drawing or press Esc to cancel</source>
-      <translation>手写笔轮廓终点离起点过远；请继续描画，或按 Esc 取消</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/label_widget.py" line="899" />
-      <source>Create Pencil Contours</source>
-      <translation>创建手写笔轮廓</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/label_widget.py" line="904" />
-      <source>Draw a polygon by pressing, tracing, and releasing a stylus</source>
-      <translation>按下手写笔、沿轮廓描画，并在抬笔时创建多边形</translation>
-    </message>
-    <message>
       <location filename="../../views/labeling/label_widget.py" line="807" />
       <source>Create Rectangle</source>
       <translation>创建矩形</translation>
@@ -5783,36 +5768,6 @@ Results have been saved to:
       <location filename="../../views/labeling/settings/schema.py" line="112" />
       <source>Brush Simplification Tolerance</source>
       <translation>笔刷简化容差</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="115" />
-      <source>Pencil Point Distance</source>
-      <translation>手写笔点间距</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="117" />
-      <source>Pencil Simplification Tolerance</source>
-      <translation>手写笔简化容差</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="119" />
-      <source>Pencil Close Distance</source>
-      <translation>手写笔闭合距离</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="122" />
-      <source>Set the screen-pixel spacing between sampled Pencil points.</source>
-      <translation>设置手写笔采样点之间的屏幕像素间距。</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="126" />
-      <source>Set Pencil contour RDP tolerance in image pixels. Use 0 to preserve all sampled points.</source>
-      <translation>以图像像素为单位设置手写笔轮廓的 RDP 容差。设为 0 可保留所有采样点。</translation>
-    </message>
-    <message>
-      <location filename="../../views/labeling/settings/schema.py" line="132" />
-      <source>Set the maximum screen-pixel gap allowed when closing a Pencil contour on release.</source>
-      <translation>设置抬笔闭合手写笔轮廓时允许的最大屏幕像素间距。</translation>
     </message>
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="115" />

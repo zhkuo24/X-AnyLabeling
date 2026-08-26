@@ -112,25 +112,6 @@ def _settings_translation_markers() -> None:
     QCoreApplication.translate(
         "SettingsDialog", "Brush Simplification Tolerance"
     )
-    QCoreApplication.translate("SettingsDialog", "Pencil Point Distance")
-    QCoreApplication.translate(
-        "SettingsDialog", "Pencil Simplification Tolerance"
-    )
-    QCoreApplication.translate("SettingsDialog", "Pencil Close Distance")
-    QCoreApplication.translate(
-        "SettingsDialog",
-        "Set the screen-pixel spacing between sampled Pencil points.",
-    )
-    QCoreApplication.translate(
-        "SettingsDialog",
-        "Set Pencil contour RDP tolerance in image pixels. "
-        "Use 0 to preserve all sampled points.",
-    )
-    QCoreApplication.translate(
-        "SettingsDialog",
-        "Set the maximum screen-pixel gap allowed when closing a "
-        "Pencil contour on release.",
-    )
     QCoreApplication.translate(
         "SettingsDialog",
         "Set polygon simplification tolerance in image pixels. "
@@ -1029,60 +1010,6 @@ def _non_shortcut_fields() -> list[SettingField]:
             ),
         ),
         SettingField(
-            "canvas.pencil.point_distance",
-            QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT, "Pencil Point Distance"
-            ),
-            "float",
-            "Canvas",
-            "Interaction",
-            "Pencil",
-            minimum=1.0,
-            maximum=200.0,
-            decimals=1,
-            description=QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT,
-                "Set the screen-pixel spacing between sampled Pencil points.",
-            ),
-        ),
-        SettingField(
-            "canvas.pencil.simplify_epsilon",
-            QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT,
-                "Pencil Simplification Tolerance",
-            ),
-            "float",
-            "Canvas",
-            "Interaction",
-            "Pencil",
-            minimum=0.0,
-            maximum=50.0,
-            decimals=2,
-            description=QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT,
-                "Set Pencil contour RDP tolerance in image pixels. "
-                "Use 0 to preserve all sampled points.",
-            ),
-        ),
-        SettingField(
-            "canvas.pencil.close_distance",
-            QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT, "Pencil Close Distance"
-            ),
-            "float",
-            "Canvas",
-            "Interaction",
-            "Pencil",
-            minimum=1.0,
-            maximum=200.0,
-            decimals=1,
-            description=QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT,
-                "Set the maximum screen-pixel gap allowed when closing a "
-                "Pencil contour on release.",
-            ),
-        ),
-        SettingField(
             "canvas.cuboid.default_depth_vector",
             QT_TRANSLATE_NOOP(
                 SETTINGS_TRANSLATION_CONTEXT, "Default Depth Vector"
@@ -1232,7 +1159,6 @@ def _shortcut_category_map() -> dict[str, tuple[str, ...]]:
             "add_point_to_edge",
             "copy_polygon",
             "create_brush_polygon",
-            "create_pencil_polygon",
             "create_circle",
             "create_cuboid",
             "create_line",
