@@ -155,8 +155,9 @@ class TestUploadShapeAttributes(unittest.TestCase):
 
     def test_invalid_upload_preserves_active_configuration(self):
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", encoding="utf-8"
+            mode="w", suffix=".json", encoding="utf-8", delete=False
         ) as file:
+            self.addCleanup(os.unlink, file.name)
             json.dump({"car": {"color": []}}, file)
             file.flush()
             attributes = {"person": {"age": ["adult", "child"]}}
@@ -209,8 +210,9 @@ class TestUploadShapeAttributes(unittest.TestCase):
 
     def test_valid_upload_rebuilds_open_attribute_panel(self):
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", encoding="utf-8"
+            mode="w", suffix=".json", encoding="utf-8", delete=False
         ) as file:
+            self.addCleanup(os.unlink, file.name)
             json.dump({"car": {"size": ["small", "large"]}}, file)
             file.flush()
             shape = SimpleNamespace(
@@ -272,8 +274,9 @@ class TestUploadShapeAttributes(unittest.TestCase):
 
     def test_repeated_upload_keeps_auto_switch_signal_state_consistent(self):
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", encoding="utf-8"
+            mode="w", suffix=".json", encoding="utf-8", delete=False
         ) as file:
+            self.addCleanup(os.unlink, file.name)
             json.dump({"car": {"color": ["red", "blue"]}}, file)
             file.flush()
 

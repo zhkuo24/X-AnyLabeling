@@ -17,7 +17,8 @@ from anylabeling.views.labeling.widgets import video_classifier_dialog
 class TestStreamingVideoBody(unittest.TestCase):
     def test_streamed_body_contains_complete_video_data(self):
         source_data = b"video-payload!"
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as source:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as source:
+            self.addCleanup(os.unlink, source.name)
             source.write(source_data)
             source.flush()
             worker = video_classifier_dialog.VideoDescriptionWorker(
@@ -41,7 +42,8 @@ class TestStreamingVideoBody(unittest.TestCase):
         self.assertEqual(base64.b64decode(encoded), source_data)
 
     def test_streaming_stops_when_cancelled(self):
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as source:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as source:
+            self.addCleanup(os.unlink, source.name)
             source.write(b"video")
             source.flush()
             body = video_classifier_dialog._StreamingVideoBody(

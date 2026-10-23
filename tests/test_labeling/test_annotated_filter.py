@@ -61,17 +61,19 @@ class TestFilteredFileSelection(unittest.TestCase):
         self.assertIsNone(_select_filtered_file(all_files, [], "2"))
 
     def test_label_path_honors_output_directory(self):
-        image = "/images/case/frame.png"
+        image = os.path.join(os.sep, "images", "case", "frame.png")
         source_widget = SimpleNamespace(output_dir=None)
-        output_widget = SimpleNamespace(output_dir="/labels")
+        output_widget = SimpleNamespace(
+            output_dir=os.path.join(os.sep, "labels")
+        )
 
         self.assertEqual(
             LabelingWidget._label_file_for_image(source_widget, image),
-            "/images/case/frame.json",
+            os.path.join(os.sep, "images", "case", "frame.json"),
         )
         self.assertEqual(
             LabelingWidget._label_file_for_image(output_widget, image),
-            "/labels/frame.json",
+            os.path.join(os.sep, "labels", "frame.json"),
         )
 
 

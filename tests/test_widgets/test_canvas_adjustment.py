@@ -67,7 +67,7 @@ class TestCanvasAdjustmentWidget(unittest.TestCase):
         self.widget.brightness_slider.setValue(53)
 
         self.assertEqual(len(signal_spy), 0)
-        QtTest.QTest.qWait(self.widget.BC_UPDATE_INTERVAL_MS + 10)
+        self.assertTrue(signal_spy.wait(1000))
         self.assertEqual(len(signal_spy), 1)
         self.assertEqual(list(signal_spy[0]), [53, 50])
 

@@ -344,8 +344,8 @@ class TestDicomFileHandling(unittest.TestCase):
 
     def test_output_directory_is_a_sibling(self):
         self.assertEqual(
-            get_output_directory("/data/study.dcm"),
-            "/data/study_frames",
+            get_output_directory(Path(os.sep) / "data" / "study.dcm"),
+            str(Path(os.sep) / "data" / "study_frames"),
         )
 
 
