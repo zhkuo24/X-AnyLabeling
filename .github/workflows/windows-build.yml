@@ -1,0 +1,85 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "anylabeling/**"
+      - "packaging/pyinstaller/**"
+      - "scripts/build_executable.sh"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64 CPU
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[cpu]" pyinstaller pytest
+
+      - name: Run annotation and media regression tests
+        run: >-
+          python -m pytest tests/test_canvas tests/test_labeling
+          tests/test_settings/test_schema.py tests/test_utils
+          tests/test_widgets/test_playback_control.py
+          tests/test_widgets/test_canvas_adjustment.py
+
+      - name: Build executable
+        shell: bash
+        run: bash scripts/build_executable.sh win-cpu
+
+      - name: Verify executable and write checksum
+        shell: pwsh
+        run: |
+          $executables = @(Get-ChildItem dist/X-AnyLabeling-v*-CPU.exe)
+          if ($executables.Count -ne 1) {
+            throw "Expected exactly one Windows CPU executable."
+          }
+          $exe = $executables[0]
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList "version" -PassThru
+          if (-not $process.WaitForExit(120000)) {
+            $process.Kill()
+            throw "Executable version check timed out."
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Executable version check failed: $($process.ExitCode)"
+          }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($exe.Name)" | Set-Content "$($exe.FullName).sha256" -Encoding ascii
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: X-AnyLabeling-Windows-x64-CPU
+          path: |
+            dist/X-AnyLabeling-v*-CPU.exe
+            dist/X-AnyLabeling-v*-CPU.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

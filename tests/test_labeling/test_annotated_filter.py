@@ -152,6 +152,7 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
         )
 
     def tearDown(self):
+        self.view._stop_playback()
         self.window.hide()
         self.window.deleteLater()
         self.app.processEvents()
