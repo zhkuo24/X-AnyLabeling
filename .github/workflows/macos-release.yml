@@ -1,0 +1,121 @@
+name: Publish Latest macOS
+
+on:
+  workflow_run:
+    workflows: [Build macOS]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-latest-macos
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Update macOS downloads
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: macos-latest
+    steps:
+      - name: Find the latest successful macOS build
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GH_REPO}/actions/workflows/macos-build.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0]' > build.json
+          jq -e --arg repo "$GH_REPO" '
+            .conclusion == "success" and
+            .head_branch == "main" and
+            .head_repository.full_name == $repo and
+            .path == ".github/workflows/macos-build.yml"
+          ' build.json
+          echo "run_id=$(jq -er '.id' build.json)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -er '.head_sha' build.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify both macOS builds
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p release-assets
+          for arch in arm64 x86_64; do
+            gh run download "$SOURCE_RUN_ID" \
+              --name "X-AnyLabeling-macOS-${arch}" --dir "incoming/${arch}"
+            archives=(incoming/"${arch}"/*-"${arch}"-unsigned.zip)
+            if [ "${#archives[@]}" -ne 1 ]; then
+              echo "Expected exactly one verified macOS ${arch} archive." >&2
+              exit 1
+            fi
+            archive="${archives[0]}"
+            expected=$(awk '{print $1}' "${archive}.sha256")
+            actual=$(sha256sum "$archive" | cut -d ' ' -f 1)
+            test "$expected" = "$actual"
+            asset="X-AnyLabeling-macOS-${arch}-unsigned.zip"
+            cp "$archive" "release-assets/${asset}"
+            (
+              cd release-assets
+              sha256sum "$asset" > "${asset}.sha256"
+            )
+          done
+
+      - name: Publish a single rolling macOS release
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          macOS 最新构建。下载对应芯片的 ZIP，解压后将 .app 拖入“应用程序”。
+
+          - Apple Silicon（M 系列）：arm64
+          - Intel：x86_64
+          - 这两个程序包未经 Apple Developer ID 签名和公证。
+          - 首次打开若被系统拦截，请在“系统设置 → 隐私与安全性”中确认允许打开。
+
+          此预发布条目持续更新，每种芯片只保留最新程序包；下载链接保持不变。
+
+          - 源码提交：[$SOURCE_SHA](https://github.com/${GH_REPO}/commit/${SOURCE_SHA})
+          - 构建记录：[macOS 构建](https://github.com/${GH_REPO}/actions/runs/${SOURCE_RUN_ID})
+          - 已通过回归测试、应用结构和签名完整性检查，以及解压后的版本启动检查。
+          - .sha256 附件用于校验下载完整性。
+          EOF
+
+          if gh api "repos/${GH_REPO}/releases/tags/${RELEASE_TAG}" > release.json 2>/dev/null; then
+            if jq -e '.immutable == true' release.json > /dev/null; then
+              echo "This release is immutable and cannot be used for rolling builds." >&2
+              exit 1
+            fi
+            gh api --method PATCH "repos/${GH_REPO}/git/refs/tags/${RELEASE_TAG}" \
+              -f sha="$SOURCE_SHA" -F force=true > /dev/null
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "macOS 最新构建（Apple Silicon / Intel）" \
+              --notes-file release-notes.md --prerelease
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --target "$SOURCE_SHA" --title "macOS 最新构建（Apple Silicon / Intel）" \
+              --notes-file release-notes.md --prerelease --latest=false
+          fi
+          {
+            echo "### macOS 最新下载"
+            echo "[Release](https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG})"
+            for arch in arm64 x86_64; do
+              echo "[下载 ${arch}](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/X-AnyLabeling-macOS-${arch}-unsigned.zip)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

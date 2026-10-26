@@ -4,6 +4,8 @@
 import os
 import re
 
+from PyInstaller.utils.hooks import collect_data_files
+
 def _resolve_root_dir():
     env_root = os.environ.get('X_ANYLABELING_ROOT')
     if env_root:
@@ -43,8 +45,13 @@ a = Analysis(
         (_p('anylabeling', 'services', 'auto_labeling', 'configs', 'clip', '*'), 'anylabeling/services/auto_labeling/configs/clip'),
         (_p('anylabeling', 'services', 'auto_labeling', 'configs', 'ppocr', '*'), 'anylabeling/services/auto_labeling/configs/ppocr'),
         (_p('anylabeling', 'services', 'auto_labeling', 'configs', 'ram', '*'), 'anylabeling/services/auto_labeling/configs/ram')
+    ] + collect_data_files('matplotlib'),
+    hiddenimports=[
+        'matplotlib',
+        'matplotlib.backends.backend_agg',
+        'matplotlib.font_manager',
+        'matplotlib.mathtext',
     ],
-    hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
@@ -53,9 +60,7 @@ pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
+    exclude_binaries=True,
     name=f'X-AnyLabeling-{__version__}-macOS',
     debug=False,
     strip=False,
@@ -64,10 +69,18 @@ exe = EXE(
     console=False,
     icon=_p('anylabeling', 'resources', 'images', 'icon.icns'),
 )
-app = BUNDLE(
+coll = COLLECT(
     exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name=f'X-AnyLabeling-{__version__}-macOS',
+)
+app = BUNDLE(
+    coll,
     name=f'X-AnyLabeling-v{__version__}-macOS.app',
     icon=_p('anylabeling', 'resources', 'images', 'icon.icns'),
-    bundle_identifier=None,
+    bundle_identifier='io.github.zhkuo24.x-anylabeling',
     info_plist={'NSHighResolutionCapable': 'True'},
 )
