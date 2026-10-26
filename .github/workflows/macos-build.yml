@@ -98,7 +98,7 @@ jobs:
               info = plistlib.load(stream)
           executable = app / "Contents/MacOS" / info["CFBundleExecutable"]
           subprocess.run(
-              ["lipo", "-verify_arch", arch, str(executable)], check=True,
+              ["lipo", str(executable), "-verify_arch", arch], check=True,
           )
           subprocess.run(
               ["codesign", "--verify", "--deep", "--strict", str(app)],
@@ -106,8 +106,10 @@ jobs:
           )
           result = subprocess.run(
               [str(executable), "version"],
-              capture_output=True, text=True, timeout=120, check=True,
+              capture_output=True, text=True, timeout=120,
           )
+          if result.returncode:
+              raise RuntimeError(f"App version check failed: {result.stderr}")
           expected = runpy.run_path("anylabeling/app_info.py")["__version__"]
           if result.stdout.strip() != expected:
               raise RuntimeError(f"Unexpected app version: {result.stdout!r}")
