@@ -45,7 +45,7 @@ jobs:
           echo "run_id=$(jq -er '.id' build.json)" >> "$GITHUB_OUTPUT"
           echo "sha=$(jq -er '.head_sha' build.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Download and verify both macOS builds
+      - name: Download and verify the Apple Silicon build
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -53,7 +53,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           mkdir -p release-assets
-          for arch in arm64 x86_64; do
+          for arch in arm64; do
             gh run download "$SOURCE_RUN_ID" \
               --name "X-AnyLabeling-macOS-${arch}" --dir "incoming/${arch}"
             archives=(incoming/"${arch}"/*-"${arch}"-unsigned.zip)
@@ -81,14 +81,13 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          macOS 最新构建。下载对应芯片的 ZIP，解压后将 .app 拖入“应用程序”。
+          macOS M 系列芯片最新构建。下载 ZIP，解压后将 .app 拖入“应用程序”。
 
           - Apple Silicon（M 系列）：arm64
-          - Intel：x86_64
-          - 这两个程序包未经 Apple Developer ID 签名和公证。
+          - 程序包未经 Apple Developer ID 签名和公证。
           - 首次打开若被系统拦截，请在“系统设置 → 隐私与安全性”中确认允许打开。
 
-          此预发布条目持续更新，每种芯片只保留最新程序包；下载链接保持不变。
+          此预发布条目持续更新，只保留 M 系列最新程序包；下载链接保持不变。
 
           - 源码提交：[$SOURCE_SHA](https://github.com/${GH_REPO}/commit/${SOURCE_SHA})
           - 构建记录：[macOS 构建](https://github.com/${GH_REPO}/actions/runs/${SOURCE_RUN_ID})
@@ -105,17 +104,17 @@ jobs:
               -f sha="$SOURCE_SHA" -F force=true > /dev/null
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
             gh release edit "$RELEASE_TAG" \
-              --title "macOS 最新构建（Apple Silicon / Intel）" \
+              --title "macOS 最新构建（M 系列）" \
               --notes-file release-notes.md --prerelease
           else
             gh release create "$RELEASE_TAG" release-assets/* \
-              --target "$SOURCE_SHA" --title "macOS 最新构建（Apple Silicon / Intel）" \
+              --target "$SOURCE_SHA" --title "macOS 最新构建（M 系列）" \
               --notes-file release-notes.md --prerelease --latest=false
           fi
           {
             echo "### macOS 最新下载"
             echo "[Release](https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG})"
-            for arch in arm64 x86_64; do
+            for arch in arm64; do
               echo "[下载 ${arch}](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/X-AnyLabeling-macOS-${arch}-unsigned.zip)"
             done
           } >> "$GITHUB_STEP_SUMMARY"

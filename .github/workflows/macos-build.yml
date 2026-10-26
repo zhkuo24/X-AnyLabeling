@@ -21,20 +21,8 @@ concurrency:
 
 jobs:
   build:
-    name: macOS ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Apple Silicon
-            os: macos-15
-            python_arch: arm64
-            arch: arm64
-          - name: Intel
-            os: macos-15-intel
-            python_arch: x64
-            arch: x86_64
-    runs-on: ${{ matrix.os }}
+    name: macOS Apple Silicon
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       QT_QPA_PLATFORM: offscreen
@@ -46,7 +34,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          architecture: ${{ matrix.python_arch }}
+          architecture: arm64
           cache: pip
           cache-dependency-path: pyproject.toml
 
@@ -67,7 +55,7 @@ jobs:
 
       - name: Verify archived application
         env:
-          EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_ARCH: arm64
         run: |
           python - <<'PY'
           import os
@@ -119,10 +107,10 @@ jobs:
       - name: Upload macOS application
         uses: actions/upload-artifact@v7
         with:
-          name: X-AnyLabeling-macOS-${{ matrix.arch }}
+          name: X-AnyLabeling-macOS-arm64
           path: |
-            dist/*-${{ matrix.arch }}-unsigned.zip
-            dist/*-${{ matrix.arch }}-unsigned.zip.sha256
+            dist/*-arm64-unsigned.zip
+            dist/*-arm64-unsigned.zip.sha256
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
