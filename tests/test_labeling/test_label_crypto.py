@@ -762,6 +762,22 @@ class TestEnvelopeRoles(unittest.TestCase):
         converter.custom_to_yolo(encrypted, allowed, "hbb")
         self.assertTrue(os.path.isfile(allowed))
 
+    def test_unconfigured_session_cannot_export(self):
+        from anylabeling.label_crypto import (
+            current_role,
+            training_export_allowed,
+        )
+        from anylabeling.label_crypto import TrainingExportDenied
+        from anylabeling.views.labeling.label_converter import LabelConverter
+
+        clear_key_cache()
+        self.assertIsNone(current_role())
+        self.assertFalse(training_export_allowed())
+        blocked = os.path.join(self.temp_dir.name, "unconfigured.txt")
+        with self.assertRaises(TrainingExportDenied):
+            LabelConverter().custom_to_yolo(blocked, blocked, "hbb")
+        self.assertFalse(os.path.exists(blocked))
+
     def test_settings_reject_raw_key_and_legacy_path(self):
         from anylabeling.label_crypto import (
             LEGACY_KEY_MESSAGE,

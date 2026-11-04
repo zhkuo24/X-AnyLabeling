@@ -443,9 +443,13 @@ def current_role() -> str | None:
 
 
 def training_export_allowed() -> bool:
-    """False only while an annotator credential is unlocked."""
+    """Plaintext training export is allowed only for an algorithm session.
 
-    return current_role() != ROLE_ANNOTATOR
+    An unlocked annotator credential and a process with no role both fail
+    closed. Callers in the export menu, converters, and overview use this.
+    """
+
+    return current_role() == ROLE_ALGORITHM
 
 
 def configure_key_file(path, *, force: bool = False) -> KeyMaterial | None:

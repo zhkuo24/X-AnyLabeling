@@ -63,12 +63,35 @@ class TestLabelConverterObbBounds(unittest.TestCase):
         with open(self.classes_file, "w", encoding="utf-8") as f:
             f.write("plane\n")
         self.converter = LabelConverter(classes_file=self.classes_file)
+        self._unlock_algorithm_export()
 
     def tearDown(self):
         import shutil
 
+        from anylabeling.label_crypto import clear_key_cache
+
+        clear_key_cache()
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
+
+    def _unlock_algorithm_export(self):
+        from anylabeling.label_crypto import (
+            configure_master,
+            generate_key_file,
+            wrap_credential,
+        )
+
+        master = generate_key_file(
+            os.path.join(self.temp_dir, "export-master.key")
+        )
+        dek = generate_key_file(os.path.join(self.temp_dir, "export-dek.key"))
+        wrap_credential(
+            master.path,
+            os.path.join(self.temp_dir, "export-annotator.xalk"),
+            "converter-passphrase",
+            dek_path=dek.path,
+        )
+        configure_master(master.path)
 
     def _write_label_file(self, points):
         label_file = os.path.join(self.temp_dir, "label.json")
@@ -120,7 +143,6 @@ class TestLabelConverterObbBounds(unittest.TestCase):
         )
 
         self.addCleanup(clear_key_cache)
-        clear_key_cache()
         image_path = os.path.join(self.temp_dir, "frame.png")
         with open(image_path, "wb") as handle:
             handle.write(b"")
