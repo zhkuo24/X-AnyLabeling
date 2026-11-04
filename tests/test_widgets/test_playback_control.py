@@ -146,9 +146,23 @@ class TestPlaybackControl(unittest.TestCase):
         self.assertEqual(self.widget.frame_label.text(), "1 / 1")
         self.assertFalse(self.widget.prev_button.isEnabled())
         self.assertFalse(self.widget.next_button.isEnabled())
-        self.assertFalse(self.widget.play_button.isEnabled())
-        self.assertFalse(self.widget.loop_button.isEnabled())
         self.assertFalse(self.widget.progress_slider.isEnabled())
+        # Play and loop stay clickable so a single frame can explain why
+        # playback will not start instead of swallowing the click.
+        self.assertTrue(self.widget.play_button.isEnabled())
+        self.assertTrue(self.widget.loop_button.isEnabled())
+
+        state_spy = QtTest.QSignalSpy(self.widget.playback_state_requested)
+        loop_spy = QtTest.QSignalSpy(self.widget.loop_requested)
+        self.widget.play_button.click()
+        self.widget.loop_button.click()
+
+        self.assertEqual([list(item) for item in state_spy], [[True]])
+        self.assertEqual([list(item) for item in loop_spy], [[True]])
+        self.assertFalse(self.widget.play_button.isChecked())
+        self.assertFalse(self.widget.loop_button.isChecked())
+        self.assertFalse(self.widget._is_playing)
+        self.assertFalse(self.widget._is_looping)
 
     def test_step_buttons_emit_direction(self):
         self.widget.set_total_frames(3)
@@ -236,7 +250,7 @@ class TestPlaybackControl(unittest.TestCase):
         self.assertEqual(len(state_spy), 1)
         self.assertFalse(self.widget.play_button.isChecked())
 
-    def test_rapid_second_click_after_pause_cannot_restart_playback(self):
+    def test_second_click_after_pause_starts_playback(self):
         self.widget.set_total_frames(3)
         self.widget.set_playback_state(True)
         state_spy = QtTest.QSignalSpy(
@@ -248,10 +262,62 @@ class TestPlaybackControl(unittest.TestCase):
 
         self.assertEqual(
             [list(request) for request in state_spy],
-            [[False], [False]],
+            [[False], [True]],
         )
-        self.assertFalse(self.widget.play_button.isChecked())
-        self.assertFalse(self.widget._is_playing)
+        self.assertTrue(self.widget.play_button.isChecked())
+        self.assertTrue(self.widget._is_playing)
+
+    def test_loop_press_requests_state_before_mouse_release(self):
+        self.widget.set_total_frames(4)
+        spy = QtTest.QSignalSpy(self.widget.loop_requested)
+        center = self.widget.loop_button.rect().center()
+        outside = QtCore.QPoint(-30, -30)
+
+        QtTest.QTest.mousePress(
+            self.widget.loop_button,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            center,
+        )
+        self.app.processEvents()
+
+        self.assertEqual([list(item) for item in spy], [[True]])
+        self.assertTrue(self.widget.loop_button.isChecked())
+
+        QtTest.QTest.mouseRelease(
+            self.widget.loop_button,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            outside,
+        )
+        self.app.processEvents()
+
+        self.assertEqual(len(spy), 1)
+        self.assertTrue(self.widget._is_looping)
+        self.assertTrue(self.widget.loop_button.isChecked())
+
+        QtTest.QTest.mousePress(
+            self.widget.loop_button,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            center,
+        )
+        self.app.processEvents()
+
+        self.assertEqual([list(item) for item in spy], [[True], [False]])
+        self.assertFalse(self.widget.loop_button.isChecked())
+
+        QtTest.QTest.mouseRelease(
+            self.widget.loop_button,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            outside,
+        )
+        self.app.processEvents()
+
+        self.assertEqual(len(spy), 2)
+        self.assertFalse(self.widget._is_looping)
+        self.assertFalse(self.widget.loop_button.isChecked())
 
     def test_programmatic_slider_updates_do_not_request_seek(self):
         self.widget.set_total_frames(10)
