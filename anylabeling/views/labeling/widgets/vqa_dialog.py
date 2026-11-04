@@ -1509,6 +1509,13 @@ class VQADialog(QDialog):
         """
         Export all annotation data to a JSONL file.
         """
+        from anylabeling.views.labeling.utils.export import (
+            _allow_training_export,
+        )
+
+        if not _allow_training_export(self):
+            return
+
         if not self.image_files:
             QMessageBox.warning(
                 self, self.tr("Warning"), self.tr("No images loaded!")

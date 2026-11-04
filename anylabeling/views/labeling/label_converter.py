@@ -27,6 +27,17 @@ from anylabeling.views.labeling.utils.general import is_possible_rectangle
 
 
 class LabelConverter:
+    def _require_training_export(self):
+        from anylabeling.label_crypto import (
+            TRAINING_EXPORT_DENIED,
+            TrainingExportDenied,
+            training_export_allowed,
+        )
+
+        if training_export_allowed():
+            return
+        raise TrainingExportDenied(TRAINING_EXPORT_DENIED)
+
     def __init__(self, classes_file=None, pose_cfg_file=None):
         self.classes = []
         if classes_file:
@@ -1276,6 +1287,7 @@ class LabelConverter:
         skip_empty_files=False,
         obb_boundary_policy="skip",
     ):
+        self._require_training_export()
         is_empty_file = True
         if osp.exists(input_file):
             data = self.read_xlabel(input_file)
@@ -1469,6 +1481,7 @@ class LabelConverter:
     def custom_to_voc(
         self, image_file, input_file, output_dir, mode, skip_empty_files=False
     ):
+        self._require_training_export()
         is_emtpy_file = True
         image = self.imread_unicode(image_file, 1)[0]
         image_height, image_width, image_depth = image.shape
@@ -1549,6 +1562,7 @@ class LabelConverter:
         return is_emtpy_file
 
     def custom_to_coco(self, image_list, input_path, output_path, mode):
+        self._require_training_export()
         coco_data = self.get_coco_data(mode)
 
         if mode == "rectangle":
@@ -1798,6 +1812,7 @@ class LabelConverter:
         self.save_json(coco_data, output_file, indent=4)
 
     def custom_to_dota(self, input_file, output_file):
+        self._require_training_export()
         data = self.read_xlabel(input_file)
         w, h = data["imageWidth"], data["imageHeight"]
         with open(output_file, "w", encoding="utf-8") as f:
@@ -1829,6 +1844,7 @@ class LabelConverter:
                 )
 
     def custom_to_mask(self, input_file, output_file, mapping_table):
+        self._require_training_export()
         data = self.read_xlabel(input_file)
         image_width = data["imageWidth"]
         image_height = data["imageHeight"]
@@ -1908,6 +1924,7 @@ class LabelConverter:
             ].tofile(output_file)
 
     def custom_to_mot(self, input_path, save_path):
+        self._require_training_export()
         mot_structure = {
             "sequence": dict(
                 name="MOT",
@@ -2012,6 +2029,7 @@ class LabelConverter:
                 f.write(",".join(map(str, row)) + "\n")
 
     def custom_to_mots(self, input_path, save_path):
+        self._require_training_export()
         mots_structure = {
             "sequence": dict(
                 name="MOTS",
@@ -2095,6 +2113,7 @@ class LabelConverter:
                 f.write(" ".join(map(str, row)) + "\n")
 
     def custom_to_odvg(self, image_list, label_path, save_path):
+        self._require_training_export()
         # Save label_map.json
         label_map = {}
         for i, c in enumerate(self.classes):
@@ -2144,6 +2163,7 @@ class LabelConverter:
     def custom_to_vlm_r1_ovd(
         self, image_list, label_path, save_path, prefix=""
     ):
+        self._require_training_export()
         with jsonlines.open(save_path, mode="w") as writer:
             for i, image_file in enumerate(image_list):
                 image_name = osp.basename(image_file)
@@ -2219,6 +2239,7 @@ class LabelConverter:
                 writer.write(item)
 
     def custom_to_ppocr(self, image_file, label_file, save_path, mode):
+        self._require_training_export()
         if not osp.exists(label_file):
             return
         image_name = osp.basename(image_file)

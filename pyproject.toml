@@ -144,6 +144,7 @@ gpu-cu13 = [
 [project.scripts]
 xanylabeling = "anylabeling.app:main"
 xlabel-keygen = "anylabeling.label_crypto:keygen_main"
+xlabel-wrap = "anylabeling.label_crypto:wrap_main"
 xlabel-decrypt = "anylabeling.label_crypto:decrypt_main"
 xlabel-encrypt = "anylabeling.label_crypto:encrypt_main"
 

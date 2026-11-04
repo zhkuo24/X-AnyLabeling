@@ -53,7 +53,11 @@ from .utils.style import (
     get_settings_button_style,
     get_toolbar_scroll_area_style,
 )
-from anylabeling.label_crypto import LabelCryptoError, configure_key_file
+from anylabeling.label_crypto import (
+    LabelCryptoError,
+    configure_from_config,
+    training_export_allowed,
+)
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
 from .logger import logger
@@ -297,11 +301,6 @@ class LabelingWidget(LabelDialog):
             config = get_config()
         self._config = config
         self._label_key_error = None
-        try:
-            configure_key_file(self._config.get("label_key_file"))
-        except LabelCryptoError as exc:
-            self._remember_label_key_error(exc)
-            self.queue_event(self._present_label_key_error)
         self.label_flags = self._config["label_flags"]
         self.label_loop_count = -1
         self.label_loop_shapes = None
@@ -339,6 +338,7 @@ class LabelingWidget(LabelDialog):
         Shape.line_width = self._config["shape"]["line_width"]
 
         super(LabelDialog, self).__init__()
+        self._load_label_session(queued_error=True)
 
         # Whether we need to save or not.
         self.dirty = False
@@ -2308,6 +2308,7 @@ class LabelingWidget(LabelDialog):
                 export_vlm_r1_ovd_annotation,
             ),
         )
+        self._sync_training_export_actions()
         utils.add_actions(
             self.menus.view,
             (
@@ -3213,6 +3214,49 @@ class LabelingWidget(LabelDialog):
         self._label_key_error = str(exc)
         logger.error(f"Failed to load label encryption key: {exc}")
 
+    def _prompt_label_passphrase(self):
+        text, ok = QtWidgets.QInputDialog.getText(
+            self,
+            self.tr("Annotator credential"),
+            self.tr(
+                "Enter the passphrase for the .xalk credential. "
+                "This unlocks labels in memory only and does not enable "
+                "xlabel-decrypt."
+            ),
+            QtWidgets.QLineEdit.EchoMode.Password,
+        )
+        if not ok or not str(text).strip():
+            return None
+        return text
+
+    def _load_label_session(self, queued_error=False):
+        try:
+            configure_from_config(
+                self._config,
+                prompter=self._prompt_label_passphrase,
+            )
+        except LabelCryptoError as exc:
+            self._remember_label_key_error(exc)
+            if queued_error:
+                self.queue_event(self._present_label_key_error)
+            else:
+                self._present_label_key_error()
+        else:
+            if getattr(self, "_label_key_error", None):
+                self._label_key_error = None
+                self.status(self.tr("Label credential loaded."), 5000)
+        self._sync_training_export_actions()
+
+    def _sync_training_export_actions(self):
+        menu = getattr(getattr(self, "menus", None), "export", None)
+        if menu is None:
+            return
+        allowed = training_export_allowed()
+        for action in menu.actions():
+            if action.isSeparator():
+                continue
+            action.setEnabled(allowed)
+
     def _present_label_key_error(self):
         message = self._label_key_error
         if not message:
@@ -3222,8 +3266,9 @@ class LabelingWidget(LabelDialog):
             self,
             self.tr("Label encryption key"),
             self.tr(
-                "Could not load the label key file. Saves stay blocked "
-                "until this path points at a readable 32-byte key."
+                "Could not unlock label encryption. Annotators set a "
+                ".xalk credential; the algorithm machine sets the master "
+                "key. Saves stay blocked until then."
                 "<br/><br/>%s"
             )
             % message,

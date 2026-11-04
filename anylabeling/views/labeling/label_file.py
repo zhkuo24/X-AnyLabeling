@@ -12,9 +12,8 @@ from anylabeling.label_crypto import (
     ENCRYPTED_SUFFIX,
     MAGIC,
     LabelCryptoError,
-    decrypt_bytes,
-    encrypt_bytes,
-    require_key,
+    decrypt_label_blob,
+    encrypt_label_blob,
 )
 
 from . import utils
@@ -135,7 +134,7 @@ class LabelFile:
     def decode_document(filename, raw: bytes):
         if _is_encrypted_payload(filename, raw):
             try:
-                raw = decrypt_bytes(raw, require_key())
+                raw = decrypt_label_blob(raw)
             except LabelCryptoError as exc:
                 raise LabelFileError(exc) from exc
         try:
@@ -153,7 +152,7 @@ class LabelFile:
 
         payload = serialize_label(data)
         try:
-            blob = encrypt_bytes(payload, require_key())
+            blob = encrypt_label_blob(payload)
         except LabelCryptoError as exc:
             raise LabelFileError(exc) from exc
         output = encrypted_output_path(filename)

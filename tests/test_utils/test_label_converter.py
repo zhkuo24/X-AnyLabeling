@@ -113,9 +113,10 @@ class TestLabelConverterObbBounds(unittest.TestCase):
     def test_yolo_and_coco_read_encrypted_labels(self):
         from anylabeling.label_crypto import (
             clear_key_cache,
-            configure_key_file,
+            configure_master,
             encrypt_bytes,
             generate_key_file,
+            wrap_credential,
         )
 
         self.addCleanup(clear_key_cache)
@@ -144,7 +145,14 @@ class TestLabelConverterObbBounds(unittest.TestCase):
         material = generate_key_file(
             os.path.join(self.temp_dir, "project.key")
         )
-        configure_key_file(material.path)
+        master = generate_key_file(os.path.join(self.temp_dir, "master.key"))
+        wrap_credential(
+            master.path,
+            os.path.join(self.temp_dir, "annotator.xalk"),
+            "converter-passphrase",
+            dek_path=material.path,
+        )
+        configure_master(master.path)
         encrypted_path = os.path.join(self.temp_dir, "frame.xalenc")
         with open(plain_path, "rb") as handle:
             encrypted = encrypt_bytes(handle.read(), material)

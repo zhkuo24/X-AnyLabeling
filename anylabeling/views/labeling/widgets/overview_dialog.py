@@ -418,6 +418,13 @@ class OverviewDialog(QtWidgets.QDialog):
         """
         Export the label and shape information to a CSV file.
         """
+        from anylabeling.views.labeling.utils.export import (
+            _allow_training_export,
+        )
+
+        if not _allow_training_export(self):
+            return
+
         directory = QFileDialog.getExistingDirectory(
             self, self.tr("Select Directory"), ""
         )
