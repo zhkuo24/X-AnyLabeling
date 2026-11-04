@@ -81,6 +81,34 @@ class ExportThread(QThread):
             self.finished.emit(False, str(e))
 
 
+def _allow_training_export(self) -> bool:
+    from anylabeling.label_crypto import (
+        TRAINING_EXPORT_DENIED,
+        training_export_allowed,
+    )
+
+    if training_export_allowed():
+        return True
+    popup = Popup(
+        self.tr(TRAINING_EXPORT_DENIED),
+        self,
+        icon=new_icon_path("warning", "svg"),
+    )
+    popup.show_popup(self, popup_height=80, position="center")
+    return False
+
+
+def _guard_training_export(fn):
+    def wrapped(self, *args, **kwargs):
+        if not _allow_training_export(self):
+            return None
+        return fn(self, *args, **kwargs)
+
+    wrapped.__name__ = getattr(fn, "__name__", "export")
+    wrapped.__doc__ = fn.__doc__
+    return wrapped
+
+
 def _check_filename_exist(self):
     if not self.may_continue():
         return False
@@ -97,6 +125,7 @@ def _check_filename_exist(self):
     return True
 
 
+@_guard_training_export
 def export_yolo_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -366,6 +395,7 @@ def export_yolo_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
+@_guard_training_export
 def export_voc_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -548,6 +578,7 @@ def export_voc_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
+@_guard_training_export
 def export_coco_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -734,6 +765,7 @@ def export_coco_annotation(self, mode):
     progress_dialog.canceled.connect(self.export_thread.terminate)
 
 
+@_guard_training_export
 def export_dota_annotation(self):
     if not _check_filename_exist(self):
         return
@@ -905,6 +937,7 @@ def export_dota_annotation(self):
         popup.show_popup(self, position="center")
 
 
+@_guard_training_export
 def export_mask_annotation(self):
     if not _check_filename_exist(self):
         return
@@ -1076,6 +1109,7 @@ def export_mask_annotation(self):
         popup.show_popup(self, position="center")
 
 
+@_guard_training_export
 def export_mot_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -1240,10 +1274,12 @@ def export_mot_annotation(self, mode):
     progress_dialog.canceled.connect(self.export_thread.terminate)
 
 
+@_guard_training_export
 def export_odvg_annotation(self):
     export_mot_annotation(self, "odvg")
 
 
+@_guard_training_export
 def export_pporc_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -1427,6 +1463,7 @@ def export_pporc_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
+@_guard_training_export
 def export_vlm_r1_ovd_annotation(self):
     if not _check_filename_exist(self):
         return

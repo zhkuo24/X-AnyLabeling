@@ -88,6 +88,7 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
             window.deleteLater()
         self.app.processEvents()
         self.temp_dir.cleanup()
+        os.environ.pop("XLABEL_PASSPHRASE", None)
         from anylabeling.label_crypto import clear_key_cache
 
         clear_key_cache()
@@ -107,11 +108,36 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         config["auto_save"] = auto_save
         config["keep_prev"] = keep_prev
         config["exif_scan_enabled"] = False
-        from anylabeling.label_crypto import generate_key_file
+        from anylabeling.label_crypto import (
+            generate_key_file,
+            keystore_path,
+            metadata_path,
+            wrap_credential,
+        )
 
-        key_path = root / "project.key"
-        generate_key_file(str(key_path))
-        config["label_key_file"] = str(key_path)
+        master_path = root / "master.key"
+        dek_path = root / "project.key"
+        credential_path = root / "annotator.xalk"
+        generate_key_file(str(master_path))
+        generate_key_file(str(dek_path))
+        wrap_credential(
+            str(master_path),
+            str(credential_path),
+            "playback-passphrase",
+            dek_path=str(dek_path),
+        )
+        for leftover in (
+            master_path,
+            dek_path,
+            Path(metadata_path(str(master_path))),
+            Path(metadata_path(str(dek_path))),
+            Path(keystore_path(str(master_path))),
+        ):
+            if leftover.exists():
+                leftover.unlink()
+        config["label_key_file"] = None
+        config["label_credential_file"] = str(credential_path)
+        os.environ["XLABEL_PASSPHRASE"] = "playback-passphrase"
         window = MainWindow(self.app, config=config, filename=str(frame_dir))
         window.resize(1000, 720)
         window.show()
@@ -120,6 +146,15 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         view = window.labeling_widget.view
         self.assertEqual(len(view.image_list), len(frames))
         self.assertIsNotNone(view.filename)
+        export_actions = [
+            action
+            for action in view.menus.export.actions()
+            if not action.isSeparator()
+        ]
+        self.assertTrue(export_actions)
+        self.assertTrue(
+            all(not action.isEnabled() for action in export_actions)
+        )
         return window, view, frames
 
     def _snapshot(self, frames):

@@ -1764,6 +1764,12 @@ class ChatbotDialog(QDialog):
 
         def export_dataset():
             option_dialog.accept()
+            from anylabeling.views.labeling.utils.export import (
+                _allow_training_export,
+            )
+
+            if not _allow_training_export(self):
+                return
 
             if not self.parent().filename:
                 QMessageBox.warning(

@@ -4,9 +4,19 @@ font_family: null  # null uses the system default font
 model_hub: github  # github, modelscope
 device: null  # CPU, GPU
 auto_save: true
-# Path to a 32-byte key file from `xlabel-keygen`. Required to save labels.
-# Loaded once into memory. The key itself is never stored in this file.
+# Deprecated raw key path. Ignored when a credential or master path below
+# is set. If this is the only path, startup refuses to load it.
+# Migration (existing .xalenc stays valid; the old file is the DEK):
+#   xlabel-keygen -o master.key
+#   xlabel-wrap --master master.key --dek <old label_key_file> -o annotator.xalk
 label_key_file: null
+# Annotator .xalk from xlabel-wrap. The GUI asks for the passphrase
+# (or reads XLABEL_PASSPHRASE). This does not enable xlabel-decrypt.
+label_credential_file: null
+# Algorithm machine only. 32-byte master from xlabel-keygen, with
+# <master>.xalstore written by xlabel-wrap. Enables batch decrypt and
+# plaintext training export. Leave null on annotator machines.
+label_master_key_file: null
 display_label_popup: true
 store_data: false
 keep_prev: false

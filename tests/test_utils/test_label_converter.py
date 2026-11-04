@@ -63,12 +63,35 @@ class TestLabelConverterObbBounds(unittest.TestCase):
         with open(self.classes_file, "w", encoding="utf-8") as f:
             f.write("plane\n")
         self.converter = LabelConverter(classes_file=self.classes_file)
+        self._unlock_algorithm_export()
 
     def tearDown(self):
         import shutil
 
+        from anylabeling.label_crypto import clear_key_cache
+
+        clear_key_cache()
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
+
+    def _unlock_algorithm_export(self):
+        from anylabeling.label_crypto import (
+            configure_master,
+            generate_key_file,
+            wrap_credential,
+        )
+
+        master = generate_key_file(
+            os.path.join(self.temp_dir, "export-master.key")
+        )
+        dek = generate_key_file(os.path.join(self.temp_dir, "export-dek.key"))
+        wrap_credential(
+            master.path,
+            os.path.join(self.temp_dir, "export-annotator.xalk"),
+            "converter-passphrase",
+            dek_path=dek.path,
+        )
+        configure_master(master.path)
 
     def _write_label_file(self, points):
         label_file = os.path.join(self.temp_dir, "label.json")
@@ -113,13 +136,13 @@ class TestLabelConverterObbBounds(unittest.TestCase):
     def test_yolo_and_coco_read_encrypted_labels(self):
         from anylabeling.label_crypto import (
             clear_key_cache,
-            configure_key_file,
+            configure_master,
             encrypt_bytes,
             generate_key_file,
+            wrap_credential,
         )
 
         self.addCleanup(clear_key_cache)
-        clear_key_cache()
         image_path = os.path.join(self.temp_dir, "frame.png")
         with open(image_path, "wb") as handle:
             handle.write(b"")
@@ -144,7 +167,14 @@ class TestLabelConverterObbBounds(unittest.TestCase):
         material = generate_key_file(
             os.path.join(self.temp_dir, "project.key")
         )
-        configure_key_file(material.path)
+        master = generate_key_file(os.path.join(self.temp_dir, "master.key"))
+        wrap_credential(
+            master.path,
+            os.path.join(self.temp_dir, "annotator.xalk"),
+            "converter-passphrase",
+            dek_path=material.path,
+        )
+        configure_master(master.path)
         encrypted_path = os.path.join(self.temp_dir, "frame.xalenc")
         with open(plain_path, "rb") as handle:
             encrypted = encrypt_bytes(handle.read(), material)
