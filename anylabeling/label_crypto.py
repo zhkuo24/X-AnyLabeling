@@ -239,20 +239,25 @@ def generate_key_file(path: str) -> KeyMaterial:
 
 
 def configure_key_file(path, *, force: bool = False) -> KeyMaterial | None:
-    """Load ``path`` into memory once.
+    """Load ``path`` into memory.
 
-    Passing the same path again is a no-op unless ``force`` is set. ``None``
-    or a blank path clears the in-memory key. The key bytes stay in this
-    process only.
+    A successful load of the same path is reused unless ``force`` is set.
+    A failed load is not sticky: the next call reads the file again, so a
+    missing or unreadable key can be fixed without restarting. ``None`` or a
+    blank path clears the in-memory key. The key bytes stay in this process
+    only.
     """
 
     if path is None or (isinstance(path, str) and not str(path).strip()):
         normalized = None
     else:
         normalized = osp.abspath(osp.expanduser(str(path)))
-    if not force and _CACHE.loaded and _CACHE.path == normalized:
-        if _CACHE.error:
-            raise LabelCryptoError(_CACHE.error)
+    if (
+        not force
+        and _CACHE.loaded
+        and _CACHE.error is None
+        and _CACHE.path == normalized
+    ):
         return _CACHE.material
     _CACHE.path = normalized
     _CACHE.loaded = True
@@ -280,14 +285,22 @@ def current_key() -> KeyMaterial | None:
 
 
 def require_key() -> KeyMaterial:
-    if _CACHE.error:
-        raise LabelCryptoError(_CACHE.error)
-    if _CACHE.material is None:
-        raise LabelCryptoError(MISSING_KEY_MESSAGE)
-    return _CACHE.material
+    """Return the cached key, re-reading the file after a failed load."""
+
+    if _CACHE.material is not None and not _CACHE.error:
+        return _CACHE.material
+    if _CACHE.path:
+        return configure_key_file(_CACHE.path, force=True)
+    raise LabelCryptoError(MISSING_KEY_MESSAGE)
+
+
+def _refuse_existing(path: Path) -> None:
+    if path.exists():
+        raise LabelCryptoError(f"refusing to overwrite existing file: {path}")
 
 
 def _atomic_write(path: str, data: bytes) -> None:
+    _refuse_existing(Path(path))
     directory = osp.dirname(osp.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
     temporary = None
@@ -342,9 +355,12 @@ def decrypt_tree(key_path: str, source: str, output: str) -> int:
         files = _iter_encrypted_files(src)
         if not files:
             raise LabelCryptoError(f"no {ENCRYPTED_SUFFIX} files in {src}")
+        pairs = []
         for path in files:
-            relative = path.relative_to(src).with_suffix(".json")
-            target = dst / relative
+            target = dst / path.relative_to(src).with_suffix(".json")
+            _refuse_existing(target)
+            pairs.append((path, target))
+        for path, target in pairs:
             target.parent.mkdir(parents=True, exist_ok=True)
             _decrypt_file(material, path, target)
         return len(files)
@@ -352,6 +368,7 @@ def decrypt_tree(key_path: str, source: str, output: str) -> int:
         raise LabelCryptoError(f"input not found: {src}")
     if dst.exists() and dst.is_dir():
         dst = dst / (src.stem + ".json")
+    _refuse_existing(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     _decrypt_file(material, src, dst)
     return 1
@@ -365,6 +382,7 @@ def encrypt_file(key_path: str, source: str, output: str) -> None:
         raise LabelCryptoError(f"input file not found: {src}")
     if dst.exists() and dst.is_dir():
         dst = dst / (src.stem + ENCRYPTED_SUFFIX)
+    _refuse_existing(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     _encrypt_file(material, src, dst)
 
@@ -412,7 +430,10 @@ def decrypt_main(argv=None) -> int:
         "-o",
         "--output",
         required=True,
-        help="output .json file, or a directory for batch mode",
+        help=(
+            "output .json file, or a directory for batch mode; "
+            "existing files are left untouched"
+        ),
     )
     args = parser.parse_args(argv)
     return _run(lambda: decrypt_tree(args.key, args.input, args.output))
@@ -429,7 +450,7 @@ def encrypt_main(argv=None) -> int:
         "-o",
         "--output",
         required=True,
-        help="output .xalenc file",
+        help="output .xalenc file; an existing file is left untouched",
     )
     args = parser.parse_args(argv)
     return _run(lambda: encrypt_file(args.key, args.input, args.output))

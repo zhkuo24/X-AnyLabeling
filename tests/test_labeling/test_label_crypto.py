@@ -25,6 +25,7 @@ from anylabeling.label_crypto import (
     keygen_main,
     load_key_file,
     metadata_path,
+    require_key,
     split_envelope,
 )
 from anylabeling.views.labeling.label_file import (
@@ -194,6 +195,70 @@ class TestLabelCrypto(unittest.TestCase):
         )
         self.assertFalse(rejected.exists())
 
+    def test_failed_key_load_is_retried(self):
+        key_path = os.path.join(self.temp_dir.name, "later.key")
+        with self.assertRaises(LabelCryptoError):
+            configure_key_file(key_path)
+        with self.assertRaises(LabelCryptoError):
+            require_key()
+
+        material = generate_key_file(key_path)
+        loaded = configure_key_file(key_path)
+        self.assertEqual(loaded.key, material.key)
+
+        clear_key_cache()
+        appears = os.path.join(self.temp_dir.name, "appears.key")
+        with self.assertRaises(LabelCryptoError):
+            configure_key_file(appears)
+        os.rename(key_path, appears)
+        self.assertEqual(require_key().key_id, material.key_id)
+
+    def test_successful_key_stays_cached_until_forced(self):
+        material = self._key("cached.key")
+        configure_key_file(material.path)
+        Path(material.path).write_bytes(os.urandom(KEY_LEN))
+        cached = configure_key_file(material.path)
+        self.assertEqual(cached.key, material.key)
+        forced = configure_key_file(material.path, force=True)
+        self.assertEqual(len(forced.key), KEY_LEN)
+        self.assertNotEqual(forced.key, material.key)
+
+    def test_decrypt_and_encrypt_refuse_to_overwrite(self):
+        root = Path(self.temp_dir.name)
+        material = self._key("keep.key")
+        source = root / "plain.json"
+        source.write_text('{"keep":true}', encoding="utf-8")
+        encrypted = root / "plain.xalenc"
+        self.assertEqual(
+            encrypt_main(
+                ["-k", material.path, str(source), "-o", str(encrypted)]
+            ),
+            0,
+        )
+        self.assertEqual(
+            encrypt_main(
+                ["-k", material.path, str(source), "-o", str(encrypted)]
+            ),
+            1,
+        )
+        original = encrypted.read_bytes()
+        destination = root / "plain-out.json"
+        destination.write_text("leave-me", encoding="utf-8")
+        self.assertEqual(
+            decrypt_main(
+                [
+                    "-k",
+                    material.path,
+                    str(encrypted),
+                    "-o",
+                    str(destination),
+                ]
+            ),
+            1,
+        )
+        self.assertEqual(destination.read_text(encoding="utf-8"), "leave-me")
+        self.assertEqual(encrypted.read_bytes(), original)
+
     def test_tool_script_prints_key_id(self):
         key_path = Path(self.temp_dir.name) / "from-tool.key"
         repo = Path(__file__).resolve().parents[2]
@@ -325,6 +390,91 @@ class TestLabelFileEncryption(unittest.TestCase):
         with self.assertRaises(LabelFileError) as wrong:
             LabelFile(encrypted)
         self.assertIn("different key", str(wrong.exception))
+
+
+class TestReviewFollowups(unittest.TestCase):
+    def setUp(self):
+        clear_key_cache()
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="xal-review-")
+        self.addCleanup(self.temp_dir.cleanup)
+        self.addCleanup(clear_key_cache)
+
+    def test_file_list_marks_decrypt_failure(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from anylabeling.views.labeling.label_widget import LabelingWidget
+
+        material = generate_key_file(
+            os.path.join(self.temp_dir.name, "project.key")
+        )
+        plain = json.dumps({"checked": True, "shapes": []}).encode("utf-8")
+        encrypted = os.path.join(self.temp_dir.name, "frame.xalenc")
+        Path(encrypted).write_bytes(encrypt_bytes(plain, material))
+        legacy = os.path.join(self.temp_dir.name, "frame.json")
+        Path(legacy).write_text(plain.decode("utf-8"), encoding="utf-8")
+        missing = os.path.join(self.temp_dir.name, "absent.xalenc")
+        clear_key_cache()
+        host = object()
+        self.assertFalse(LabelingWidget._label_file_checked(host, missing))
+        self.assertEqual(
+            LabelingWidget._label_file_checked(host, encrypted), "error"
+        )
+        self.assertTrue(LabelingWidget._label_file_checked(host, legacy))
+        configure_key_file(material.path)
+        self.assertTrue(LabelingWidget._label_file_checked(host, encrypted))
+
+    def test_vqa_batch_reports_write_failure(self):
+        from anylabeling.views.labeling.widgets.vqa_dialog import (
+            VQADialog,
+            update_label_document,
+        )
+
+        material = generate_key_file(
+            os.path.join(self.temp_dir.name, "project.key")
+        )
+        document = {"vqaData": {}, "shapes": []}
+        encrypted = os.path.join(self.temp_dir.name, "frame.xalenc")
+        original = encrypt_bytes(
+            json.dumps(document).encode("utf-8"), material
+        )
+        Path(encrypted).write_bytes(original)
+        clear_key_cache()
+
+        error = update_label_document(
+            encrypted,
+            lambda data: data["vqaData"].__setitem__("q", "a") or True,
+        )
+        self.assertIsNotNone(error)
+        self.assertIn(encrypted, error)
+        self.assertEqual(Path(encrypted).read_bytes(), original)
+
+        class Host:
+            def parent(self):
+                return mock.Mock(
+                    output_dir=self_dir,
+                    _labels_in_directory=lambda _directory: [encrypted],
+                )
+
+            def tr(self, text):
+                return text
+
+        self_dir = self.temp_dir.name
+        host = Host()
+        host._report_label_write_failures = (
+            lambda errors: VQADialog._report_label_write_failures(host, errors)
+        )
+        with mock.patch(
+            "anylabeling.views.labeling.widgets.vqa_dialog.QMessageBox.critical"
+        ) as critical:
+            VQADialog.apply_to_all_label_files(
+                host,
+                lambda label_file: VQADialog.add_component_to_json_file(
+                    host, label_file, "question", "yes"
+                ),
+            )
+        critical.assert_called_once()
+        self.assertIn("1", critical.call_args.args[2])
+        self.assertIn("unchanged", critical.call_args.args[2])
+        self.assertEqual(Path(encrypted).read_bytes(), original)
 
 
 if __name__ == "__main__":

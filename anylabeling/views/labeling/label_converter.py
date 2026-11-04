@@ -1220,6 +1220,51 @@ class LabelConverter:
         self.custom_data["imageWidth"] = image_width
         self.save_json(self.custom_data, output_file)
 
+    @staticmethod
+    def resolve_xlabel_path(image_file, label_dir=None, *, fallback=False):
+        """Locate the xlabel document for one image.
+
+        Prefers an existing ``.xalenc`` file, then legacy ``.json``. When
+        ``fallback`` is set and ``label_dir`` has neither, a label beside
+        the image is used. The returned path may not exist.
+        """
+
+        from anylabeling.views.labeling.label_file import LabelFile
+
+        stem = osp.splitext(osp.basename(image_file))[0]
+        directory = label_dir or osp.dirname(image_file)
+        primary = LabelFile.resolve_label_path(directory, stem)
+        if osp.isfile(primary) or not fallback or not label_dir:
+            return primary
+        beside = LabelFile.resolve_label_path(osp.dirname(image_file), stem)
+        if osp.isfile(beside):
+            return beside
+        return primary
+
+    @staticmethod
+    def read_xlabel(file_path):
+        """Read a plaintext or encrypted xlabel document."""
+
+        from anylabeling.views.labeling.label_file import LabelFile
+
+        return LabelFile.read_document(file_path)
+
+    @staticmethod
+    def list_xlabel_files(directory):
+        """Label paths in ``directory``, preferring ``.xalenc`` per stem."""
+
+        from anylabeling.views.labeling.label_file import LabelFile
+
+        found = {}
+        for name in os.listdir(directory):
+            ext = osp.splitext(name)[1].lower()
+            if ext not in {LabelFile.suffix, LabelFile.legacy_suffix}:
+                continue
+            stem = osp.splitext(name)[0]
+            if stem not in found or ext == LabelFile.suffix:
+                found[stem] = osp.join(directory, name)
+        return list(found.values())
+
     #################################################
     #                Export Methods                 #
     #################################################
@@ -1233,7 +1278,7 @@ class LabelConverter:
     ):
         is_empty_file = True
         if osp.exists(input_file):
-            data = self.read_json(input_file)
+            data = self.read_xlabel(input_file)
         else:
             if not skip_empty_files:
                 pathlib.Path(output_file).touch()
@@ -1428,7 +1473,7 @@ class LabelConverter:
         image = self.imread_unicode(image_file, 1)[0]
         image_height, image_width, image_depth = image.shape
         if osp.exists(input_file):
-            data = self.read_json(input_file)
+            data = self.read_xlabel(input_file)
             shapes = data["shapes"]
         else:
             if not skip_empty_files:
@@ -1545,14 +1590,13 @@ class LabelConverter:
                 polygon_data = {}
 
             image_name = osp.basename(image_file)
-            label_name = osp.splitext(image_name)[0] + ".json"
-            label_file = osp.join(input_path, label_name)
-            if not osp.exists(label_file):
-                label_file = osp.join(osp.dirname(image_file), label_name)
-                if not osp.exists(label_file):
-                    continue
+            label_file = self.resolve_xlabel_path(
+                image_file, input_path, fallback=True
+            )
+            if not osp.isfile(label_file):
+                continue
 
-            data = self.read_json(label_file)
+            data = self.read_xlabel(label_file)
             image_width = data["imageWidth"]
             image_height = data["imageHeight"]
             coco_data["images"].append(
@@ -1754,7 +1798,7 @@ class LabelConverter:
         self.save_json(coco_data, output_file, indent=4)
 
     def custom_to_dota(self, input_file, output_file):
-        data = self.read_json(input_file)
+        data = self.read_xlabel(input_file)
         w, h = data["imageWidth"], data["imageHeight"]
         with open(output_file, "w", encoding="utf-8") as f:
             for shape in data["shapes"]:
@@ -1785,7 +1829,7 @@ class LabelConverter:
                 )
 
     def custom_to_mask(self, input_file, output_file, mapping_table):
-        data = self.read_json(input_file)
+        data = self.read_xlabel(input_file)
         image_width = data["imageWidth"]
         image_height = data["imageHeight"]
         image_shape = (image_height, image_width)
@@ -1879,20 +1923,20 @@ class LabelConverter:
         }
         seg_len, im_widht, im_height, im_ext = 0, None, None, None
 
-        label_file_list = os.listdir(input_path)
+        label_file_list = self.list_xlabel_files(input_path)
         label_file_list.sort(
-            key=lambda x: (
-                int(osp.splitext(x.rsplit("-", 1)[-1])[0])
-                if osp.splitext(x.rsplit("-", 1)[-1])[0].isdigit()
+            key=lambda path: (
+                int(osp.splitext(osp.basename(path).rsplit("-", 1)[-1])[0])
+                if osp.splitext(osp.basename(path).rsplit("-", 1)[-1])[
+                    0
+                ].isdigit()
                 else 0
             )
         )
 
-        for label_file_name in label_file_list:
-            if not label_file_name.endswith("json"):
-                continue
-            label_file = os.path.join(input_path, label_file_name)
-            data = self.read_json(label_file)
+        for label_file in label_file_list:
+            label_file_name = osp.basename(label_file)
+            data = self.read_xlabel(label_file)
 
             seg_len += 1
             if im_widht is None:
@@ -1982,20 +2026,20 @@ class LabelConverter:
         }
         seg_len, im_widht, im_height, im_ext = 0, None, None, None
 
-        label_file_list = os.listdir(input_path)
+        label_file_list = self.list_xlabel_files(input_path)
         label_file_list.sort(
-            key=lambda x: (
-                int(osp.splitext(x.rsplit("-", 1)[-1])[0])
-                if osp.splitext(x.rsplit("-", 1)[-1])[0].isdigit()
+            key=lambda path: (
+                int(osp.splitext(osp.basename(path).rsplit("-", 1)[-1])[0])
+                if osp.splitext(osp.basename(path).rsplit("-", 1)[-1])[
+                    0
+                ].isdigit()
                 else 0
             )
         )
 
-        for label_file_name in label_file_list:
-            if not label_file_name.endswith("json"):
-                continue
-            label_file = os.path.join(input_path, label_file_name)
-            data = self.read_json(label_file)
+        for label_file in label_file_list:
+            label_file_name = osp.basename(label_file)
+            data = self.read_xlabel(label_file)
 
             seg_len += 1
             if im_widht is None:
@@ -2062,12 +2106,11 @@ class LabelConverter:
         od_data = []
         for image_file in image_list:
             image_name = osp.basename(image_file)
-            label_name = osp.splitext(image_name)[0] + ".json"
-            label_file = osp.join(label_path, label_name)
-            if not osp.exists(label_file):
-                label_file = osp.join(osp.dirname(image_file), label_name)
+            label_file = self.resolve_xlabel_path(
+                image_file, label_path, fallback=True
+            )
             width, height = self.get_image_size(image_file)
-            data = self.read_json(label_file)
+            data = self.read_xlabel(label_file)
             instances = []
             for shape in data["shapes"]:
                 if (
@@ -2104,13 +2147,12 @@ class LabelConverter:
         with jsonlines.open(save_path, mode="w") as writer:
             for i, image_file in enumerate(image_list):
                 image_name = osp.basename(image_file)
-                label_name = osp.splitext(image_name)[0] + ".json"
-                label_file = osp.join(label_path, label_name)
-                if not osp.exists(label_file):
-                    label_file = osp.join(osp.dirname(image_file), label_name)
+                label_file = self.resolve_xlabel_path(
+                    image_file, label_path, fallback=True
+                )
 
                 width, height = self.get_image_size(image_file)
-                data = self.read_json(label_file)
+                data = self.read_xlabel(label_file)
                 box_labels, unique_labels = [], set()
                 for shape in data["shapes"]:
                     if shape["shape_type"] != "rectangle":
@@ -2190,7 +2232,7 @@ class LabelConverter:
             "quadrilateral",
         ]
         img = cv2.imdecode(np.fromfile(image_file, dtype=np.uint8), 1)
-        data = self.read_json(label_file)
+        data = self.read_xlabel(label_file)
         image_width = data["imageWidth"]
         image_height = data["imageHeight"]
 

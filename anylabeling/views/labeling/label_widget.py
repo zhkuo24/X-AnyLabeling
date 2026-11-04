@@ -106,6 +106,7 @@ LABEL_OPACITY = 128
 CHECKED_FIELD = "checked"
 FILE_CHECKED_COLOR = "#22A06B"
 FILE_UNCHECKED_COLOR = "#8C98A4"
+FILE_DECRYPT_FAILED_COLOR = "#D14343"
 CHECKED_FIELD_PATTERN = re.compile(r'"checked"\s*:\s*(true|false)')
 
 # AI-inferred annotations are tagged with ``attributes[AI_SOURCE_KEY]`` and
@@ -295,10 +296,12 @@ class LabelingWidget(LabelDialog):
         if config is None:
             config = get_config()
         self._config = config
+        self._label_key_error = None
         try:
             configure_key_file(self._config.get("label_key_file"))
         except LabelCryptoError as exc:
-            logger.error("Failed to load label encryption key: %s", exc)
+            self._remember_label_key_error(exc)
+            self.queue_event(self._present_label_key_error)
         self.label_flags = self._config["label_flags"]
         self.label_loop_count = -1
         self.label_loop_shapes = None
@@ -496,6 +499,7 @@ class LabelingWidget(LabelDialog):
         self.file_status_icons = {
             True: _create_file_status_icon(FILE_CHECKED_COLOR),
             False: _create_file_status_icon(FILE_UNCHECKED_COLOR),
+            "error": _create_file_status_icon(FILE_DECRYPT_FAILED_COLOR),
         }
         self.file_list_widget.itemSelectionChanged.connect(
             self.file_selection_changed
@@ -3205,6 +3209,36 @@ class LabelingWidget(LabelDialog):
     def status(self, message, delay=5000):
         self.statusBar().showMessage(message, delay)
 
+    def _remember_label_key_error(self, exc):
+        self._label_key_error = str(exc)
+        logger.error(f"Failed to load label encryption key: {exc}")
+
+    def _present_label_key_error(self):
+        message = self._label_key_error
+        if not message:
+            return
+        self.status(self.tr("Label key failed to load: %s") % message, 0)
+        QtWidgets.QMessageBox.warning(
+            self,
+            self.tr("Label encryption key"),
+            self.tr(
+                "Could not load the label key file. Saves stay blocked "
+                "until this path points at a readable 32-byte key."
+                "<br/><br/>%s"
+            )
+            % message,
+        )
+
+    def report_label_key_error(self, exc):
+        self._remember_label_key_error(exc)
+        self._present_label_key_error()
+
+    def report_label_key_loaded(self):
+        if not getattr(self, "_label_key_error", None):
+            return
+        self._label_key_error = None
+        self.status(self.tr("Label encryption key loaded."), 5000)
+
     def reset_state(self):
         if (
             self._playback_mode is not None
@@ -4052,8 +4086,8 @@ class LabelingWidget(LabelDialog):
         if str(label_file).lower().endswith(LabelFile.suffix):
             try:
                 data = LabelFile.read_document(label_file)
-            except Exception:
-                return False
+            except (LabelFileError, OSError, ValueError):
+                return "error"
             return data.get("checked", False) is True
         try:
             buffer = ""
@@ -4094,7 +4128,14 @@ class LabelingWidget(LabelDialog):
             item.setCheckState(Qt.CheckState.Checked)
         else:
             item.setCheckState(Qt.CheckState.Unchecked)
-        self._set_file_item_checked(item, self._label_file_checked(label_file))
+        checked = self._label_file_checked(label_file)
+        self._set_file_item_checked(item, checked)
+        if checked == "error":
+            item.setToolTip(
+                self.tr(
+                    "Could not decrypt this label. Check the label key file."
+                )
+            )
         return item
 
     def _current_file_item(self):
@@ -4980,6 +5021,9 @@ class LabelingWidget(LabelDialog):
                 flags=flags,
             )
             self.label_file = label_file
+            report_loaded = getattr(self, "report_label_key_loaded", None)
+            if report_loaded is not None:
+                report_loaded()
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchFlag.MatchExactly
             )
@@ -5402,6 +5446,9 @@ class LabelingWidget(LabelDialog):
                 flags=flags,
             )
             self.label_file = label_file
+            report_loaded = getattr(self, "report_label_key_loaded", None)
+            if report_loaded is not None:
+                report_loaded()
             items = self.file_list_widget.findItems(
                 source_image, Qt.MatchFlag.MatchExactly
             )
