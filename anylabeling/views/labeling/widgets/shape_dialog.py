@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 
@@ -16,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QImage
 
+from anylabeling.views.labeling.label_file import LabelFile
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.utils.qt import new_icon_path
@@ -265,18 +265,13 @@ class ShapeModifyDialog(QDialog):
                 break
 
             image_file = self.image_file_list[i]
-            label_dir = os.path.dirname(image_file)
-            if self.parent.output_dir:
-                label_dir = self.parent.output_dir
-
-            filename = os.path.basename(image_file)
-            label_file = os.path.join(
-                label_dir, os.path.splitext(filename)[0] + ".json"
+            label_file = LabelFile.path_for_image(
+                image_file, self.parent.output_dir
             )
 
             if os.path.exists(label_file):
                 try:
-                    os.remove(label_file)
+                    LabelFile.remove_label_pair(label_file)
                     deleted_count += 1
 
                     item = self.parent.file_list_widget.item(i)
@@ -322,15 +317,11 @@ class ShapeModifyDialog(QDialog):
                     save_file = os.path.join(save_path, image_name)
                     shutil.move(image_file, save_file)
 
-                    label_dir = os.path.dirname(image_file)
-                    if self.parent.output_dir:
-                        label_dir = self.parent.output_dir
-                    label_file = os.path.join(
-                        label_dir, os.path.splitext(image_name)[0] + ".json"
+                    label_file = LabelFile.path_for_image(
+                        image_file, self.parent.output_dir
                     )
-
                     if os.path.exists(label_file):
-                        os.remove(label_file)
+                        LabelFile.remove_label_pair(label_file)
 
                     deleted_count += 1
                 except Exception as e:
@@ -437,19 +428,13 @@ class ShapeModifyDialog(QDialog):
                 break
 
             image_file = self.image_file_list[i]
-            label_dir = os.path.dirname(image_file)
-            if self.parent.output_dir:
-                label_dir = self.parent.output_dir
-
-            filename = os.path.basename(image_file)
-            label_file = os.path.join(
-                label_dir, os.path.splitext(filename)[0] + ".json"
+            label_file = LabelFile.path_for_image(
+                image_file, self.parent.output_dir
             )
 
             if os.path.exists(label_file):
                 try:
-                    with open(label_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
+                    data = LabelFile.read_document(label_file)
 
                     all_shapes = data.get("shapes", [])
                     if not all_shapes:
@@ -470,7 +455,7 @@ class ShapeModifyDialog(QDialog):
                                 break
 
                     if len(shapes_to_remove) == len(all_shapes):
-                        os.remove(label_file)
+                        LabelFile.remove_label_pair(label_file)
                         removed_count += len(shapes_to_remove)
                         deleted_files_count += 1
                     elif shapes_to_remove:
@@ -481,8 +466,7 @@ class ShapeModifyDialog(QDialog):
                         ]
                         removed_count += len(shapes_to_remove)
                         data["shapes"] = filtered_shapes
-                        with open(label_file, "w", encoding="utf-8") as f:
-                            json.dump(data, f, indent=2, ensure_ascii=False)
+                        LabelFile.write_document(label_file, data)
 
                 except Exception as e:
                     logger.error(f"Error processing {label_file}: {e}")
@@ -541,13 +525,9 @@ class ShapeModifyDialog(QDialog):
                 break
 
             image_file = self.image_file_list[i]
-            label_dir = os.path.dirname(image_file)
-            if self.parent.output_dir:
-                label_dir = self.parent.output_dir
-
             filename = os.path.basename(image_file)
-            label_file = os.path.join(
-                label_dir, os.path.splitext(filename)[0] + ".json"
+            label_file = LabelFile.path_for_image(
+                image_file, self.parent.output_dir
             )
 
             if not os.path.exists(image_file):
@@ -566,8 +546,7 @@ class ShapeModifyDialog(QDialog):
 
             if os.path.exists(label_file):
                 try:
-                    with open(label_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
+                    data = LabelFile.read_document(label_file)
                 except Exception as e:
                     logger.error(f"Error reading {label_file}: {e}")
                     processed += 1
@@ -607,8 +586,7 @@ class ShapeModifyDialog(QDialog):
                         data["shapes"].append(selected_shape.to_dict())
                         added_count += 1
 
-                with open(label_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
+                LabelFile.write_document(label_file, data)
 
                 item = self.parent.file_list_widget.item(i)
                 if item:

@@ -50,12 +50,13 @@ class FileDialogPreview(QtWidgets.QFileDialog):
         self.currentChanged.connect(self.on_change)
 
     def on_change(self, path):
-        if path.lower().endswith(".json"):
-            with open(path, "r") as f:
-                data = json.load(f)
-                self.label_preview.set_text(
-                    json.dumps(data, indent=4, sort_keys=False)
-                )
+        if LabelFile.is_label_file(path):
+            try:
+                data = LabelFile.read_document(path)
+                text = json.dumps(data, indent=4, sort_keys=False)
+            except Exception as exc:
+                text = str(exc)
+            self.label_preview.set_text(text)
             self.label_preview.label.setAlignment(
                 QtCore.Qt.AlignmentFlag.AlignLeft
                 | QtCore.Qt.AlignmentFlag.AlignTop

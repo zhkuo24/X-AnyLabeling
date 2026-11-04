@@ -1,5 +1,4 @@
 import os
-import json
 import shutil
 from typing import List, Dict
 
@@ -9,36 +8,39 @@ from anylabeling.views.labeling.utils.general import (
 )
 
 
+def _label_file():
+    # Imported lazily: this module is loaded while LabelFile is still
+    # initializing, via the labeling widget package.
+    from anylabeling.views.labeling.label_file import LabelFile, LabelFileError
+
+    return LabelFile, LabelFileError
+
+
 def get_label_file_path(image_path: str, output_dir: str = None) -> str:
-    if output_dir:
-        image_name = os.path.basename(image_path)
-        label_name = os.path.splitext(image_name)[0] + ".json"
-        return os.path.join(output_dir, label_name)
-    else:
-        return os.path.splitext(image_path)[0] + ".json"
+    label_file, _error = _label_file()
+    return label_file.path_for_image(image_path, output_dir)
 
 
 def load_flags_from_json(json_path: str) -> Dict[str, bool]:
     if not os.path.exists(json_path):
         return {}
 
+    label_file, label_error = _label_file()
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("flags", {})
-    except (json.JSONDecodeError, KeyError):
+        data = label_file.read_document(json_path)
+        return data.get("flags", {})
+    except (label_error, KeyError, OSError):
         return {}
 
 
 def save_flags_to_json(json_path: str, flags: Dict[str, bool]):
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
+    label_file, _error = _label_file()
+    data = label_file.read_document(json_path)
     data["flags"] = flags
-
-    os.makedirs(os.path.dirname(json_path), exist_ok=True)
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    directory = os.path.dirname(json_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    label_file.write_document(json_path, data)
 
 
 def get_first_true_flag(flags: Dict[str, bool]) -> str:

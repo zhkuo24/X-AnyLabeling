@@ -182,6 +182,14 @@ def validate_config_item(key, value):
         raise ValueError(
             f"Duplicates are detected for config key 'labels': {value}"
         )
+    if (
+        key == "label_key_file"
+        and value is not None
+        and not isinstance(value, str)
+    ):
+        raise ValueError(
+            f"Unexpected value for config key 'label_key_file': {value}"
+        )
 
 
 def get_config(

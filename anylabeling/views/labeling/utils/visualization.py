@@ -1,4 +1,3 @@
-import json
 import os
 import os.path as osp
 import zipfile
@@ -31,7 +30,6 @@ from anylabeling.views.labeling.label_file import LabelFile
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.widgets import Popup
-from anylabeling.views.labeling.utils._io import io_open
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.shape import rectangle_from_diagonal
 from anylabeling.views.labeling.utils.style import (
@@ -534,8 +532,7 @@ def _load_shapes_for_image(self, image_file, options):
     if not osp.exists(label_file):
         return []
 
-    with io_open(label_file, "r") as f:
-        data = json.load(f)
+    data = LabelFile.read_document(label_file)
 
     shapes = []
     for shape_data in data.get("shapes", []):
@@ -684,9 +681,8 @@ def _get_label_rgb(self, label):
 
 
 def _label_file_for_image(self, image_file):
-    label_dir = self.output_dir or osp.dirname(image_file)
-    return osp.join(
-        label_dir, osp.splitext(osp.basename(image_file))[0] + ".json"
+    return LabelFile.path_for_image(
+        image_file, getattr(self, "output_dir", None)
     )
 
 

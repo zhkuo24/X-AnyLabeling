@@ -4,6 +4,9 @@ font_family: null  # null uses the system default font
 model_hub: github  # github, modelscope
 device: null  # CPU, GPU
 auto_save: true
+# Path to a 32-byte key file from `xlabel-keygen`. Required to save labels.
+# Loaded once into memory. The key itself is never stored in this file.
+label_key_file: null
 display_label_popup: true
 store_data: false
 keep_prev: false

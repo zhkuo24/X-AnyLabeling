@@ -110,6 +110,76 @@ class TestLabelConverterObbBounds(unittest.TestCase):
         with open(output_file, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), "")
 
+    def test_yolo_and_coco_read_encrypted_labels(self):
+        from anylabeling.label_crypto import (
+            clear_key_cache,
+            configure_key_file,
+            encrypt_bytes,
+            generate_key_file,
+        )
+
+        self.addCleanup(clear_key_cache)
+        clear_key_cache()
+        image_path = os.path.join(self.temp_dir, "frame.png")
+        with open(image_path, "wb") as handle:
+            handle.write(b"")
+        label = {
+            "imagePath": "frame.png",
+            "imageWidth": 100,
+            "imageHeight": 50,
+            "shapes": [
+                {
+                    "label": "plane",
+                    "shape_type": "rectangle",
+                    "points": [[10, 10], [40, 10], [40, 30], [10, 30]],
+                }
+            ],
+        }
+        plain_path = os.path.join(self.temp_dir, "frame.json")
+        with open(plain_path, "w", encoding="utf-8") as handle:
+            json.dump(label, handle)
+        plain_out = os.path.join(self.temp_dir, "plain.txt")
+        self.converter.custom_to_yolo(plain_path, plain_out, "hbb")
+
+        material = generate_key_file(
+            os.path.join(self.temp_dir, "project.key")
+        )
+        configure_key_file(material.path)
+        encrypted_path = os.path.join(self.temp_dir, "frame.xalenc")
+        with open(plain_path, "rb") as handle:
+            encrypted = encrypt_bytes(handle.read(), material)
+        with open(encrypted_path, "wb") as handle:
+            handle.write(encrypted)
+        os.remove(plain_path)
+
+        encrypted_out = os.path.join(self.temp_dir, "encrypted.txt")
+        self.converter.custom_to_yolo(encrypted_path, encrypted_out, "hbb")
+        with (
+            open(plain_out, encoding="utf-8") as plain,
+            open(encrypted_out, encoding="utf-8") as restored,
+        ):
+            exported = restored.read()
+            self.assertEqual(plain.read(), exported)
+            self.assertTrue(exported.startswith("0 "))
+
+        resolved = self.converter.resolve_xlabel_path(
+            image_path, self.temp_dir
+        )
+        self.assertEqual(
+            os.path.abspath(resolved), os.path.abspath(encrypted_path)
+        )
+        coco_dir = os.path.join(self.temp_dir, "coco")
+        os.makedirs(coco_dir)
+        self.converter.custom_to_coco(
+            [image_path], self.temp_dir, coco_dir, "rectangle"
+        )
+        with open(
+            os.path.join(coco_dir, "coco_detection.json"), encoding="utf-8"
+        ) as handle:
+            coco = json.load(handle)
+        self.assertEqual(len(coco["annotations"]), 1)
+        self.assertEqual(coco["images"][0]["file_name"], "frame.png")
+
 
 class TestLabelConverterVocValidation(unittest.TestCase):
     def setUp(self):
