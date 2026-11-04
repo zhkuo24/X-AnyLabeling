@@ -6,6 +6,7 @@ from typing import Any
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt
 
+from anylabeling.label_crypto import LabelCryptoError, configure_key_file
 from anylabeling.views.common.device_manager import device_manager
 
 from .. import utils
@@ -284,6 +285,12 @@ class SettingsRuntimeApplier:
             "move_mode",
         }:
             self.apply_label_dialog_runtime(key)
+            return
+        if key == "label_key_file":
+            try:
+                configure_key_file(value, force=True)
+            except LabelCryptoError as exc:
+                logger.error("Failed to load label encryption key: %s", exc)
             return
         if key in {
             "model_hub",

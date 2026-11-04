@@ -53,6 +53,7 @@ from .utils.style import (
     get_settings_button_style,
     get_toolbar_scroll_area_style,
 )
+from anylabeling.label_crypto import LabelCryptoError, configure_key_file
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
 from .logger import logger
@@ -294,6 +295,10 @@ class LabelingWidget(LabelDialog):
         if config is None:
             config = get_config()
         self._config = config
+        try:
+            configure_key_file(self._config.get("label_key_file"))
+        except LabelCryptoError as exc:
+            logger.error("Failed to load label encryption key: %s", exc)
         self.label_flags = self._config["label_flags"]
         self.label_loop_count = -1
         self.label_loop_shapes = None
@@ -3345,28 +3350,36 @@ class LabelingWidget(LabelDialog):
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
         self.set_dirty()
 
+    @staticmethod
+    def _labels_in_directory(directory):
+        found = {}
+        if not directory or not osp.isdir(directory):
+            return []
+        for file_name in os.listdir(directory):
+            ext = osp.splitext(file_name)[1].lower()
+            if ext not in {LabelFile.suffix, LabelFile.legacy_suffix}:
+                continue
+            stem = osp.splitext(file_name)[0]
+            path = osp.join(directory, file_name)
+            previous = found.get(stem)
+            if previous is None or ext == LabelFile.suffix:
+                found[stem] = path
+        return list(found.values())
+
     def get_label_file_list(self):
         label_file_list = []
         if not self.image_list and self.filename:
-            dir_path, filename = osp.split(self.filename)
-            label_file = osp.join(
-                dir_path, osp.splitext(filename)[0] + ".json"
+            label_file = LabelFile.path_for_image(
+                self.filename, self.output_dir
             )
             if osp.exists(label_file):
                 label_file_list = [label_file]
         elif self.image_list and not self.output_dir and self.filename:
-            file_list = os.listdir(osp.dirname(self.filename))
-            for file_name in file_list:
-                if not file_name.endswith(".json"):
-                    continue
-                label_file_list.append(
-                    osp.join(osp.dirname(self.filename), file_name)
-                )
+            label_file_list.extend(
+                self._labels_in_directory(osp.dirname(self.filename))
+            )
         if self.output_dir:
-            for file_name in os.listdir(self.output_dir):
-                if not file_name.endswith(".json"):
-                    continue
-                label_file_list.append(osp.join(self.output_dir, file_name))
+            label_file_list.extend(self._labels_in_directory(self.output_dir))
         return label_file_list
 
     def copy_shape_coordinates(self):
@@ -4036,6 +4049,12 @@ class LabelingWidget(LabelDialog):
     def _label_file_checked(self, label_file):
         if not QtCore.QFile.exists(label_file):
             return False
+        if str(label_file).lower().endswith(LabelFile.suffix):
+            try:
+                data = LabelFile.read_document(label_file)
+            except Exception:
+                return False
+            return data.get("checked", False) is True
         try:
             buffer = ""
             with open(label_file, "r", encoding="utf-8") as f:
@@ -4061,13 +4080,7 @@ class LabelingWidget(LabelDialog):
         return item.data(Qt.ItemDataRole.UserRole) is True
 
     def _label_file_for_image(self, filename):
-        label_file = osp.splitext(filename)[0] + LabelFile.suffix
-        if self.output_dir:
-            label_file = osp.join(
-                self.output_dir,
-                osp.basename(label_file),
-            )
-        return label_file
+        return LabelFile.path_for_image(filename, self.output_dir)
 
     def _create_file_list_item(self, file, label_file):
         item = QtWidgets.QListWidgetItem(file)
@@ -4927,10 +4940,7 @@ class LabelingWidget(LabelDialog):
             self.scroll_area.setVisible(False)
 
     def save_attributes(self, _shapes):
-        filename = osp.splitext(self.image_path)[0] + ".json"
-        if self.output_dir:
-            label_file_without_path = osp.basename(filename)
-            filename = osp.join(self.output_dir, label_file_without_path)
+        filename = LabelFile.path_for_image(self.image_path, self.output_dir)
         label_file = LabelFile()
 
         # Get current shapes
@@ -6238,13 +6248,9 @@ class LabelingWidget(LabelDialog):
                 )
                 return False
 
-            # assumes same name, but json extension
-            label_file = osp.splitext(filename)[0] + ".json"
-            image_dir = None
-            if self.output_dir:
-                image_dir = osp.dirname(filename)
-                label_file_without_path = osp.basename(label_file)
-                label_file = self.output_dir + "/" + label_file_without_path
+            # Prefer the encrypted label, and fall back to legacy JSON.
+            image_dir = osp.dirname(filename) if self.output_dir else None
+            label_file = self._label_file_for_image(filename)
 
             if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
                 label_file
@@ -7218,7 +7224,7 @@ class LabelingWidget(LabelDialog):
         path = osp.dirname(str(self.filename)) if self.filename else "."
         formats = [f"*{ext}" for ext in utils.get_supported_image_extensions()]
         filters = self.tr("Image & Label files (%s)") % " ".join(
-            formats + [f"*{LabelFile.suffix}"]
+            formats + [f"*{LabelFile.suffix}", f"*{LabelFile.legacy_suffix}"]
         )
         file_dialog = FileDialogPreview(self)
         file_dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
@@ -7403,20 +7409,14 @@ class LabelingWidget(LabelDialog):
         if self.label_file:
             return self.label_file.filename
         base = self.image_path if self.image_path else self.filename
-        if base.lower().endswith(".json"):
+        if base and LabelFile.is_label_file(base):
             return base
-        lf = osp.splitext(base)[0] + ".json"
-        if self.output_dir:
-            lf = osp.join(self.output_dir, osp.basename(lf))
-        return lf
+        return self._label_file_for_image(base)
 
     def get_image_file(self):
-        if not self.filename.lower().endswith(".json"):
-            image_file = self.filename
-        else:
-            image_file = self.image_path
-
-        return image_file
+        if self.filename and LabelFile.is_label_file(self.filename):
+            return self.image_path
+        return self.filename
 
     def delete_file(self):
         mb = QtWidgets.QMessageBox
@@ -7445,8 +7445,14 @@ class LabelingWidget(LabelDialog):
             return
 
         label_file = self.get_label_file()
-        if osp.exists(label_file):
-            os.remove(label_file)
+        if label_file and (
+            osp.exists(label_file)
+            or osp.exists(osp.splitext(label_file)[0] + LabelFile.suffix)
+            or osp.exists(
+                osp.splitext(label_file)[0] + LabelFile.legacy_suffix
+            )
+        ):
+            LabelFile.remove_label_pair(label_file)
             logger.info(f"Label file is removed: {label_file}")
 
             item = self.file_list_widget.currentItem()
@@ -7515,12 +7521,13 @@ class LabelingWidget(LabelDialog):
             label_dir_path = osp.dirname(self.filename)
             if self.output_dir:
                 label_dir_path = self.output_dir
-            label_name = osp.splitext(image_name)[0] + ".json"
-            label_file = osp.join(label_dir_path, label_name)
+            label_file = LabelFile.path_for_image(image_file, label_dir_path)
             if not osp.exists(label_file):
-                label_file = osp.join(osp.dirname(image_file), label_name)
-            if osp.exists(label_file):
-                os.remove(label_file)
+                label_file = LabelFile.path_for_image(image_file, None)
+            if osp.exists(label_file) or osp.exists(
+                osp.splitext(label_file)[0] + LabelFile.legacy_suffix
+            ):
+                LabelFile.remove_label_pair(label_file)
                 logger.info(f"Label file is removed: {image_file}")
 
             filename = None
@@ -7949,12 +7956,7 @@ class LabelingWidget(LabelDialog):
         if self._config["auto_save"]:
             self.set_dirty()
         else:
-            label_file = osp.splitext(self.image_path)[0] + ".json"
-            if self.output_dir:
-                label_file = osp.join(
-                    self.output_dir, osp.basename(label_file)
-                )
-            self.save_labels(label_file)
+            self.save_labels(self._label_file_for_image(self.image_path))
             self.set_clean()
 
         self.status(self.tr("AI annotations approved for this frame"))

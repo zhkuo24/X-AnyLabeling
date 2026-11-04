@@ -1,6 +1,5 @@
 import os
 import csv
-import json
 import zipfile
 
 from PyQt6 import QtWidgets
@@ -18,6 +17,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from anylabeling.views.labeling.label_file import LabelFile
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import (
@@ -231,16 +231,12 @@ class OverviewDialog(QtWidgets.QDialog):
         for i, image_file in enumerate(self.image_file_list):
             if i < start_index - 1 or i > end_index - 1:
                 continue
-            label_dir, filename = os.path.split(image_file)
-            if self.parent.output_dir:
-                label_dir = self.parent.output_dir
-            label_file = os.path.join(
-                label_dir, os.path.splitext(filename)[0] + ".json"
+            label_file = LabelFile.path_for_image(
+                image_file, self.parent.output_dir
             )
             if not os.path.exists(label_file):
                 continue
-            with open(label_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = LabelFile.read_document(label_file)
             filename = data["imagePath"]
             shapes = data.get("shapes", [])
             for shape in shapes:

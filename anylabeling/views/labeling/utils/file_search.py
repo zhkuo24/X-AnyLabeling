@@ -1,7 +1,8 @@
-import json
 import os.path as osp
 import re
 from typing import Dict, Optional
+
+from anylabeling.views.labeling.label_file import LabelFile, LabelFileError
 
 
 class SearchPattern:
@@ -252,8 +253,7 @@ def matches_label_attribute(
         return False
 
     try:
-        with open(label_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = LabelFile.read_document(label_file)
         shapes = data.get("shapes", [])
 
         if filter_type == "shape":
@@ -341,7 +341,7 @@ def matches_label_attribute(
             return False
 
         return False
-    except (json.JSONDecodeError, IOError, KeyError):
+    except (LabelFileError, IOError, KeyError, UnicodeError, ValueError):
         return False
 
 
@@ -376,10 +376,7 @@ def filter_image_files(
             continue
 
         if search_pattern.mode == "attribute":
-            label_file = osp.splitext(filename)[0] + ".json"
-            if output_dir:
-                label_file_without_path = osp.basename(label_file)
-                label_file = osp.join(output_dir, label_file_without_path)
+            label_file = LabelFile.path_for_image(filename, output_dir)
 
             if not matches_label_attribute(
                 filename, label_file, search_pattern

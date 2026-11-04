@@ -90,6 +90,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
             file_list_widget=SimpleNamespace(findItems=Mock(return_value=[])),
             error_message=Mock(),
         )
+        label_file_class.path_for_image.return_value = "/tmp/image.xalenc"
 
         result = LabelingWidget.save_attributes(widget, [shape])
 

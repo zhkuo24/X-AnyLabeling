@@ -69,11 +69,11 @@ class TestFilteredFileSelection(unittest.TestCase):
 
         self.assertEqual(
             LabelingWidget._label_file_for_image(source_widget, image),
-            os.path.join(os.sep, "images", "case", "frame.json"),
+            os.path.join(os.sep, "images", "case", "frame.xalenc"),
         )
         self.assertEqual(
             LabelingWidget._label_file_for_image(output_widget, image),
-            os.path.join(os.sep, "labels", "frame.json"),
+            os.path.join(os.sep, "labels", "frame.xalenc"),
         )
 
 
@@ -315,7 +315,9 @@ class TestAnnotatedOnlyFilterIntegration(unittest.TestCase):
         # unsaved changes (2.5.3 behavior).
         self.assertEqual(self.view.filename, self.frames[0])
         self.assertEqual(self.view.image_path, self.frames[0])
-        self.assertEqual(self.view.shape_text_edit.toPlainText(), "unsaved description")
+        self.assertEqual(
+            self.view.shape_text_edit.toPlainText(), "unsaved description"
+        )
         self.assertTrue(self.view.dirty)
 
     def test_cancelled_output_directory_change_rolls_back(self):
