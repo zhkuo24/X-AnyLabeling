@@ -322,6 +322,46 @@ class TestLabelCrypto(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), material.key_id.hex())
         self.assertNotIn(material.key.hex(), result.stdout + result.stderr)
 
+    def test_private_replace_succeeds_without_fchmod(self):
+        import errno
+
+        from anylabeling import label_crypto
+
+        target = os.path.join(self.temp_dir.name, "keystore.bin")
+        payload = b"wrapped-keystore-not-a-raw-key"
+        with mock.patch.object(label_crypto.os, "fchmod", None, create=True):
+            self.assertIsNone(getattr(label_crypto.os, "fchmod", None))
+            label_crypto._write_private_replace(target, payload)
+
+        self.assertEqual(Path(target).read_bytes(), payload)
+        self.assertEqual(list(Path(self.temp_dir.name).glob(".xal_*.tmp")), [])
+        mode = os.stat(target).st_mode
+        if os.name == "nt":
+            import stat
+
+            self.assertTrue(mode & stat.S_IWRITE)
+        else:
+            self.assertEqual(mode & 0o777, 0o600)
+
+        leaked = []
+
+        def fail_fchmod(fd, mode):
+            leaked.append(fd)
+            raise AttributeError("module 'os' has no attribute 'fchmod'")
+
+        missed = os.path.join(self.temp_dir.name, "not-written.bin")
+        with mock.patch.object(
+            label_crypto.os, "fchmod", fail_fchmod, create=True
+        ):
+            with self.assertRaises(AttributeError):
+                label_crypto._write_private_replace(missed, b"secret")
+        self.assertFalse(os.path.exists(missed))
+        self.assertEqual(list(Path(self.temp_dir.name).glob(".xal_*.tmp")), [])
+        self.assertEqual(len(leaked), 1)
+        with self.assertRaises(OSError) as closed:
+            os.read(leaked[0], 1)
+        self.assertEqual(closed.exception.errno, errno.EBADF)
+
 
 class TestLabelFileEncryption(unittest.TestCase):
     def setUp(self):
