@@ -340,8 +340,12 @@ class LabelingWidget(LabelDialog):
         self.playback_timer.timeout.connect(self._on_playback_tick)
         self._playback_mode = None
         self._playback_anchor_index = None
+        self._playback_anchor_image_size = None
+        self._playback_anchor_image_data = None
         self._playback_display_index = None
         self._playback_internal_change = False
+        self._playback_arming = False
+        self._loading_file_depth = 0
         self._playback_fps = 30
         self._playback_loop_radius = 3
         self._playback_loop_indices = []
@@ -3077,7 +3081,14 @@ class LabelingWidget(LabelDialog):
         )
         utils.add_actions(self.menus.edit, actions + self.actions.editMenu)
 
-    def set_dirty(self):
+    def set_dirty(self, *_args, force=False):
+        # Loading a frame and advancing a playback preview are display-only.
+        # Signals fired while that happens (flags, label rows, brush cancel)
+        # must not mark the document dirty or rewrite its JSON.
+        if not force and (
+            self._loading_file_depth or self._playback_internal_change
+        ):
+            return
         if (
             self._playback_mode == self.PLAYBACK_SEQUENCE
             and not self._playback_internal_change
@@ -3089,25 +3100,20 @@ class LabelingWidget(LabelDialog):
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
 
-        # Loop playback displays neighbour frames via _load_image_only_for_loop,
-        # which repoints self.image_path at the previewed frame while the anchor's
-        # shapes stay on the canvas. Autosaving here would write the anchor's
-        # shapes to the neighbour's JSON (spurious duplicate frame). During loop
-        # playback edits belong to the anchor and are persisted by
-        # _ensure_loop_edits_saved()/_save_current_loop_frame_edits() on stop, so
-        # skip the immediate autosave and just mark dirty.
-        if self._config["auto_save"] and self._playback_mode != self.PLAYBACK_LOOP:
-            label_file = osp.splitext(self.image_path)[0] + ".json"
-            if self.output_dir:
-                label_file_without_path = osp.basename(label_file)
-                label_file = self.output_dir + "/" + label_file_without_path
-            self.save_labels(label_file)
-            if (
-                hasattr(self, "navigator_dialog")
-                and self.navigator_dialog.isVisible()
-            ):
-                self.update_navigator_shapes()
-            return
+        # Real edits autosave to the label document. During loop playback
+        # that document stays the anchor frame; preview frames are not
+        # candidates. ``save_labels`` enforces the same target.
+        if self._config["auto_save"]:
+            anchor = self._loop_anchor_filename()
+            source = anchor or self.image_path
+            if source:
+                self.save_labels(self._label_file_for_image(source))
+                if (
+                    hasattr(self, "navigator_dialog")
+                    and self.navigator_dialog.isVisible()
+                ):
+                    self.update_navigator_shapes()
+                return
         self.dirty = True
         self.actions.save.setEnabled(True)
         if (
@@ -5367,11 +5373,11 @@ class LabelingWidget(LabelDialog):
             flag = item.checkState() == Qt.CheckState.Checked
             flags[key] = flag
         self.other_data[CHECKED_FIELD] = self._annotation_checked()
+        filename, source_image, image_width, image_height, image_data = (
+            self._label_save_target(filename)
+        )
         try:
-            image_path = osp.relpath(self.image_path, osp.dirname(filename))
-            image_data = (
-                self.image_data if self._config["store_data"] else None
-            )
+            image_path = osp.relpath(source_image, osp.dirname(filename))
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))
 
@@ -5380,14 +5386,14 @@ class LabelingWidget(LabelDialog):
                 shapes=shapes,
                 image_path=image_path,
                 image_data=image_data,
-                image_height=self.image.height(),
-                image_width=self.image.width(),
+                image_height=image_height,
+                image_width=image_width,
                 other_data=self.other_data,
                 flags=flags,
             )
             self.label_file = label_file
             items = self.file_list_widget.findItems(
-                self.image_path, Qt.MatchFlag.MatchExactly
+                source_image, Qt.MatchFlag.MatchExactly
             )
             if len(items) > 0:
                 if len(items) != 1:
@@ -5404,6 +5410,55 @@ class LabelingWidget(LabelDialog):
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
             return False
+
+    def _loop_anchor_filename(self):
+        """Image path whose annotations the running loop is allowed to edit."""
+
+        index = self._playback_anchor_index
+        if (
+            self._playback_mode != self.PLAYBACK_LOOP
+            or index is None
+            or not 0 <= index < len(self.image_list)
+        ):
+            return None
+        return self.image_list[index]
+
+    def _label_save_target(self, filename):
+        """Return the file and image metadata a label write may persist.
+
+        Loop playback previews neighbouring frames without changing the
+        annotation document. Writes during that preview stay on the anchor
+        image, including its dimensions, so a frame advance cannot rewrite
+        another frame's JSON or retarget ``imagePath``.
+        """
+
+        anchor = self._loop_anchor_filename()
+        if anchor is None:
+            image_data = (
+                self.image_data if self._config["store_data"] else None
+            )
+            return (
+                filename,
+                self.image_path,
+                self.image.width(),
+                self.image.height(),
+                image_data,
+            )
+        if self._playback_anchor_image_size:
+            image_width, image_height = self._playback_anchor_image_size
+        else:
+            image_width = self.image.width()
+            image_height = self.image.height()
+        image_data = None
+        if self._config["store_data"]:
+            image_data = self._playback_anchor_image_data
+        return (
+            self._label_file_for_image(anchor),
+            anchor,
+            image_width,
+            image_height,
+            image_data,
+        )
 
     def duplicate_selected_shape(self):
         added_shapes = self.canvas.duplicate_selected_shapes()
@@ -6168,201 +6223,205 @@ class LabelingWidget(LabelDialog):
             self.file_list_widget.update()
             return False
 
-        self.reset_state()
-        self.canvas.setEnabled(False)
+        self._loading_file_depth += 1
+        try:
+            self.reset_state()
+            self.canvas.setEnabled(False)
 
-        if filename is None:
-            filename = self.settings.value("filename", "")
-        filename = str(filename)
-        if not QtCore.QFile.exists(filename):
-            self.error_message(
-                self.tr("Error opening file"),
-                self.tr("No such file: <b>%s</b>") % filename,
-            )
-            return False
+            if filename is None:
+                filename = self.settings.value("filename", "")
+            filename = str(filename)
+            if not QtCore.QFile.exists(filename):
+                self.error_message(
+                    self.tr("Error opening file"),
+                    self.tr("No such file: <b>%s</b>") % filename,
+                )
+                return False
 
-        # assumes same name, but json extension
-        label_file = osp.splitext(filename)[0] + ".json"
-        image_dir = None
-        if self.output_dir:
-            image_dir = osp.dirname(filename)
-            label_file_without_path = osp.basename(label_file)
-            label_file = self.output_dir + "/" + label_file_without_path
+            # assumes same name, but json extension
+            label_file = osp.splitext(filename)[0] + ".json"
+            image_dir = None
+            if self.output_dir:
+                image_dir = osp.dirname(filename)
+                label_file_without_path = osp.basename(label_file)
+                label_file = self.output_dir + "/" + label_file_without_path
 
-        if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
-            label_file
-        ):
-            try:
-                self.label_file = LabelFile(label_file, image_dir)
-            except LabelFileError as e:
+            if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
+                label_file
+            ):
+                try:
+                    self.label_file = LabelFile(label_file, image_dir)
+                except LabelFileError as e:
+                    self.error_message(
+                        self.tr("Error opening file"),
+                        self.tr(
+                            "<p><b>%s</b></p>"
+                            "<p>Make sure <i>%s</i> is a valid label file."
+                        )
+                        % (e, label_file),
+                    )
+                    self.status(self.tr("Error reading %s") % label_file)
+                    return False
+                self.image_data = self.label_file.image_data
+                image_path_dir = image_dir or osp.dirname(label_file)
+                self.image_path = osp.join(
+                    image_path_dir,
+                    self.label_file.image_path,
+                )
+                self.other_data = self.label_file.other_data
+                self.other_data[CHECKED_FIELD] = self._annotation_checked()
+                with QtCore.QSignalBlocker(self.shape_text_edit):
+                    self.shape_text_edit.setPlainText(
+                        self.other_data.get("description", "")
+                    )
+            else:
+                self.image_data = LabelFile.load_image_file(filename)
+                if self.image_data:
+                    self.image_path = filename
+                self.label_file = None
+                self.other_data = {CHECKED_FIELD: False}
+                with QtCore.QSignalBlocker(self.shape_text_edit):
+                    self.shape_text_edit.setPlainText("")
+            self.shape_text_label.setText(self.tr("Image Description"))
+            self.shape_text_edit.setDisabled(False)
+
+            # TODO(jack): icc profile issue warning
+            # - qt.gui.icc: fromIccProfile: failed minimal tag size sanity
+            # - qt.gui.icc: fromIccProfile: invalid tag offset alignment
+            image = utils.img_data_to_qimage(self.image_data, filename)
+
+            if image.isNull():
+                formats = [
+                    f"*{ext}" for ext in utils.get_supported_image_extensions()
+                ]
                 self.error_message(
                     self.tr("Error opening file"),
                     self.tr(
-                        "<p><b>%s</b></p>"
-                        "<p>Make sure <i>%s</i> is a valid label file."
-                    )
-                    % (e, label_file),
+                        "<p>Make sure <i>{0}</i> is a valid image file.<br/>"
+                        "Supported image formats: {1}</p>"
+                    ).format(filename, ",".join(formats)),
                 )
-                self.status(self.tr("Error reading %s") % label_file)
+                self.status(self.tr("Error reading %s") % filename)
                 return False
-            self.image_data = self.label_file.image_data
-            image_path_dir = image_dir or osp.dirname(label_file)
-            self.image_path = osp.join(
-                image_path_dir,
-                self.label_file.image_path,
-            )
-            self.other_data = self.label_file.other_data
-            self.other_data[CHECKED_FIELD] = self._annotation_checked()
-            with QtCore.QSignalBlocker(self.shape_text_edit):
-                self.shape_text_edit.setPlainText(
-                    self.other_data.get("description", "")
+            self.image = image
+            self.filename = filename
+
+            if (
+                hasattr(self, "navigator_dialog")
+                and self.navigator_dialog.isVisible()
+            ):
+                self.navigator_dialog.set_image(QtGui.QPixmap.fromImage(image))
+                self.update_navigator_shapes()
+            if (
+                hasattr(self, "_should_restore_navigator")
+                and self._should_restore_navigator
+            ):
+                self._should_restore_navigator = False
+                if self.navigator_dialog.isVisible():
+                    self.update_navigator_viewport()
+            if self._config["keep_prev"]:
+                prev_shapes = self.canvas.shapes
+            self.canvas.load_pixmap(QtGui.QPixmap.fromImage(image))
+
+            # load label flags
+            flags = {k: False for k in self.image_flags or []}
+            if self.label_file:
+                for shape in self.label_file.shapes:
+                    default_flags = {}
+                    if self._config["label_flags"]:
+                        for pattern, keys in self._config["label_flags"].items():
+                            if re.match(pattern, shape.label):
+                                for key in keys:
+                                    default_flags[key] = False
+                        shape.flags = {
+                            **default_flags,
+                            **shape.flags,
+                        }
+                self.load_shapes(self.label_file.shapes, update_last_label=False)
+                if self.label_file.flags is not None:
+                    flags.update(self.label_file.flags)
+            self.load_flags(flags)
+
+            # load shapes
+            if self._config["keep_prev"] and self.no_shape():
+                self.load_shapes(
+                    prev_shapes, replace=False, update_last_label=False
                 )
-        else:
-            self.image_data = LabelFile.load_image_file(filename)
-            if self.image_data:
-                self.image_path = filename
-            self.label_file = None
-            self.other_data = {CHECKED_FIELD: False}
-            with QtCore.QSignalBlocker(self.shape_text_edit):
-                self.shape_text_edit.setPlainText("")
-        self.shape_text_label.setText(self.tr("Image Description"))
-        self.shape_text_edit.setDisabled(False)
+                self.set_dirty(force=True)
+            else:
+                self.set_clean()
+            self.canvas.setEnabled(True)
 
-        # TODO(jack): icc profile issue warning
-        # - qt.gui.icc: fromIccProfile: failed minimal tag size sanity
-        # - qt.gui.icc: fromIccProfile: invalid tag offset alignment
-        image = utils.img_data_to_qimage(self.image_data, filename)
+            # set zoom values
+            is_initial_load = not self.zoom_values
+            if self.filename in self.zoom_values:
+                self.zoom_mode = self.zoom_values[self.filename][0]
+                self.set_zoom(self.zoom_values[self.filename][1])
+            elif is_initial_load or not self._config["keep_prev_scale"]:
+                self.adjust_scale(initial=True)
+            # set scroll values
+            for orientation in self.scroll_values:
+                if self.filename in self.scroll_values[orientation]:
+                    self.set_scroll(
+                        orientation, self.scroll_values[orientation][self.filename]
+                    )
 
-        if image.isNull():
-            formats = [
-                f"*{ext}" for ext in utils.get_supported_image_extensions()
-            ]
-            self.error_message(
-                self.tr("Error opening file"),
-                self.tr(
-                    "<p>Make sure <i>{0}</i> is a valid image file.<br/>"
-                    "Supported image formats: {1}</p>"
-                ).format(filename, ",".join(formats)),
+            # set brightness contrast values
+            brightness, contrast = self.brightness_contrast_values.get(
+                self.filename, (None, None)
             )
-            self.status(self.tr("Error reading %s") % filename)
-            return False
-        self.image = image
-        self.filename = filename
-
-        if (
-            hasattr(self, "navigator_dialog")
-            and self.navigator_dialog.isVisible()
-        ):
-            self.navigator_dialog.set_image(QtGui.QPixmap.fromImage(image))
-            self.update_navigator_shapes()
-        if (
-            hasattr(self, "_should_restore_navigator")
-            and self._should_restore_navigator
-        ):
-            self._should_restore_navigator = False
-            if self.navigator_dialog.isVisible():
-                self.update_navigator_viewport()
-        if self._config["keep_prev"]:
-            prev_shapes = self.canvas.shapes
-        self.canvas.load_pixmap(QtGui.QPixmap.fromImage(image))
-
-        # load label flags
-        flags = {k: False for k in self.image_flags or []}
-        if self.label_file:
-            for shape in self.label_file.shapes:
-                default_flags = {}
-                if self._config["label_flags"]:
-                    for pattern, keys in self._config["label_flags"].items():
-                        if re.match(pattern, shape.label):
-                            for key in keys:
-                                default_flags[key] = False
-                    shape.flags = {
-                        **default_flags,
-                        **shape.flags,
-                    }
-            self.load_shapes(self.label_file.shapes, update_last_label=False)
-            if self.label_file.flags is not None:
-                flags.update(self.label_file.flags)
-        self.load_flags(flags)
-
-        # load shapes
-        if self._config["keep_prev"] and self.no_shape():
-            self.load_shapes(
-                prev_shapes, replace=False, update_last_label=False
-            )
-            self.set_dirty()
-        else:
-            self.set_clean()
-        self.canvas.setEnabled(True)
-
-        # set zoom values
-        is_initial_load = not self.zoom_values
-        if self.filename in self.zoom_values:
-            self.zoom_mode = self.zoom_values[self.filename][0]
-            self.set_zoom(self.zoom_values[self.filename][1])
-        elif is_initial_load or not self._config["keep_prev_scale"]:
-            self.adjust_scale(initial=True)
-        # set scroll values
-        for orientation in self.scroll_values:
-            if self.filename in self.scroll_values[orientation]:
-                self.set_scroll(
-                    orientation, self.scroll_values[orientation][self.filename]
+            if self._config["keep_prev_brightness"] and self.recent_files:
+                brightness, _ = self.brightness_contrast_values.get(
+                    self.recent_files[0], (None, None)
                 )
-
-        # set brightness contrast values
-        brightness, contrast = self.brightness_contrast_values.get(
-            self.filename, (None, None)
-        )
-        if self._config["keep_prev_brightness"] and self.recent_files:
-            brightness, _ = self.brightness_contrast_values.get(
-                self.recent_files[0], (None, None)
+            if self._config["keep_prev_contrast"] and self.recent_files:
+                _, contrast = self.brightness_contrast_values.get(
+                    self.recent_files[0], (None, None)
+                )
+            self.brightness_contrast_values[self.filename] = (brightness, contrast)
+            # Always refresh the dialog's source image so the inline adjustment
+            # sliders can reuse its brightness/contrast pipeline (which includes
+            # 16-bit grayscale handling).
+            try:
+                pil_image = utils.img_data_to_pil(self.image_data)
+            except Exception as error:
+                # Frames that Pillow cannot decode (e.g. DICOM-derived data or
+                # exotic formats) must not break the normal load pipeline.
+                logger.error(f"Failed to decode image for brightness/contrast: {error}")
+                pil_image = None
+            if pil_image is not None:
+                self.brightness_contrast_dialog.update_image(pil_image)
+            self.brightness_contrast_dialog.set_values(
+                brightness if brightness is not None else 50,
+                contrast if contrast is not None else 50,
             )
-        if self._config["keep_prev_contrast"] and self.recent_files:
-            _, contrast = self.brightness_contrast_values.get(
-                self.recent_files[0], (None, None)
+            if brightness is not None or contrast is not None:
+                self.brightness_contrast_dialog.on_new_value()
+            # Sync the inline adjustment sliders (50 is the neutral value).
+            self.canvas_adjustment.set_brightness_contrast(
+                brightness if brightness is not None else 50,
+                contrast if contrast is not None else 50,
             )
-        self.brightness_contrast_values[self.filename] = (brightness, contrast)
-        # Always refresh the dialog's source image so the inline adjustment
-        # sliders can reuse its brightness/contrast pipeline (which includes
-        # 16-bit grayscale handling).
-        try:
-            pil_image = utils.img_data_to_pil(self.image_data)
-        except Exception as error:
-            # Frames that Pillow cannot decode (e.g. DICOM-derived data or
-            # exotic formats) must not break the normal load pipeline.
-            logger.error(f"Failed to decode image for brightness/contrast: {error}")
-            pil_image = None
-        if pil_image is not None:
-            self.brightness_contrast_dialog.update_image(pil_image)
-        self.brightness_contrast_dialog.set_values(
-            brightness if brightness is not None else 50,
-            contrast if contrast is not None else 50,
-        )
-        if brightness is not None or contrast is not None:
-            self.brightness_contrast_dialog.on_new_value()
-        # Sync the inline adjustment sliders (50 is the neutral value).
-        self.canvas_adjustment.set_brightness_contrast(
-            brightness if brightness is not None else 50,
-            contrast if contrast is not None else 50,
-        )
 
-        self.paint_canvas()
-        self.add_recent_file(self.filename)
-        self.toggle_actions(True)
-        self.canvas.setFocus()
-        self._sync_annotation_checked_state()
-        self.update_thumbnail_display()
+            self.paint_canvas()
+            self.add_recent_file(self.filename)
+            self.toggle_actions(True)
+            self.canvas.setFocus()
+            self._sync_annotation_checked_state()
+            self.update_thumbnail_display()
 
-        # Reveal the adjustment panel now that an image is loaded.
-        self.canvas_adjustment.show()
-        self._position_canvas_adjustment()
+            # Reveal the adjustment panel now that an image is loaded.
+            self.canvas_adjustment.show()
+            self._position_canvas_adjustment()
 
-        if self.compare_view_manager.is_active():
-            self.compare_view_manager.load_compare_for_file(self.filename)
+            if self.compare_view_manager.is_active():
+                self.compare_view_manager.load_compare_for_file(self.filename)
 
-        self._sync_playback_control()
-        self._sync_ai_approve_action()
-        return True
+            self._sync_playback_control()
+            self._sync_ai_approve_action()
+            return True
+        finally:
+            self._loading_file_depth -= 1
 
     # QT Overload
     def keyPressEvent(self, event):
@@ -6511,13 +6570,14 @@ class LabelingWidget(LabelDialog):
         if frame_index is None:
             frame_index = self._current_playback_index()
         self.playback_control.set_current_frame(frame_index)
+        playback_active = (
+            self.playback_timer.isActive() or self._playback_arming
+        )
         self.playback_control.set_playback_state(
-            self.playback_timer.isActive()
-            and self._playback_mode is not None
+            playback_active and self._playback_mode is not None
         )
         self.playback_control.set_loop_state(
-            self._playback_mode == self.PLAYBACK_LOOP
-            and self.playback_timer.isActive()
+            self._playback_mode == self.PLAYBACK_LOOP and playback_active
         )
 
     def set_playback_fps(self, fps):
@@ -6585,6 +6645,9 @@ class LabelingWidget(LabelDialog):
             self._config["keep_prev"] = keep_previous
 
     def _playback_available(self):
+        if self.filename is not None and len(self.image_list) == 1:
+            self.status(self.tr("Playback needs at least two frames"), 3000)
+            return False
         if len(self.image_list) < 2 or self.filename is None:
             self.status(self.tr("Open a multi-frame sequence first"), 3000)
             return False
@@ -6640,30 +6703,53 @@ class LabelingWidget(LabelDialog):
         current_index = self.fn_to_index.get(
             str(self.filename), self.file_list_widget.currentRow()
         )
-        if current_index >= len(self.image_list) - 1:
-            if not self._load_playback_frame(0, for_sequence=True):
-                self._sync_playback_control()
-                return
-            current_index = 0
-
+        self._playback_arming = True
         self._playback_mode = self.PLAYBACK_SEQUENCE
-        self._playback_display_index = current_index
-        self.canvas.setEnabled(False)
-        self.playback_timer.start(
-            max(1, int(round(1000 / self._playback_fps)))
-        )
+        try:
+            if current_index >= len(self.image_list) - 1:
+                if not self._load_playback_frame(0, for_sequence=True):
+                    self._playback_mode = None
+                    self._sync_playback_control()
+                    return
+                current_index = 0
+
+            self._playback_display_index = current_index
+            self.canvas.setEnabled(False)
+            self.playback_timer.start(
+                max(1, int(round(1000 / self._playback_fps)))
+            )
+        finally:
+            self._playback_arming = False
         self._sync_playback_control(current_index)
         self.status(self.tr("Playing frame sequence"))
 
-    def toggle_loop_playback(self):
-        if self._playback_mode == self.PLAYBACK_LOOP:
-            # Stopping: persist edits collected during the loop first, then
-            # stop and return to the anchor frame (2.5.3 behavior).
-            self._ensure_loop_edits_saved()
-            self._stop_playback(restore_anchor=True)
-            self.status(
-                self.tr("Loop playback stopped, returned to anchor frame")
-            )
+    def toggle_loop_playback(self, should_loop=None):
+        loop_running = (
+            self._playback_mode == self.PLAYBACK_LOOP
+            and self.playback_timer.isActive()
+        )
+        if should_loop is None:
+            should_loop = not loop_running
+
+        if not should_loop:
+            if self._playback_mode == self.PLAYBACK_LOOP:
+                # ``_stop_playback`` persists real anchor edits, then reloads
+                # that frame. Preview frames are never written.
+                self._stop_playback(restore_anchor=True)
+                self.status(
+                    self.tr("Loop playback stopped, returned to anchor frame")
+                )
+            elif (
+                self._playback_mode is not None
+                or self.playback_timer.isActive()
+            ):
+                self._stop_playback()
+            else:
+                self._sync_playback_control()
+            return
+
+        if loop_running:
+            self._sync_playback_control()
             return
         if self._playback_mode is not None:
             self._stop_playback()
@@ -6676,7 +6762,8 @@ class LabelingWidget(LabelDialog):
             self._sync_playback_control()
             return
 
-        # Persist pending edits before starting a new loop.
+        # Persist pending edits before starting a new loop, then clear the
+        # dirty flag so stopping later does not rewrite the same file.
         self._ensure_all_edits_saved()
 
         self._playback_mode = self.PLAYBACK_LOOP
@@ -6695,20 +6782,29 @@ class LabelingWidget(LabelDialog):
         )
 
         # Reload the anchor frame with the latest saved data so the loop
-        # starts from a consistent state. Suppress the re-entrant
-        # _stop_playback() triggered by load_file()/reset_state() while this
-        # reload is in progress.
+        # starts from a consistent state. ``_playback_arming`` keeps the
+        # loop control looking active while the timer has not started, and
+        # the internal-change flag stops that reload from saving.
+        self._playback_arming = True
         self._playback_internal_change = True
         try:
             self._load_loop_anchor_frame_with_latest_data()
+            if self.image is not None and not self.image.isNull():
+                self._playback_anchor_image_size = (
+                    int(self.image.width()),
+                    int(self.image.height()),
+                )
+            else:
+                self._playback_anchor_image_size = None
+            self._playback_anchor_image_data = self.image_data
+            # Loop playback is pinned to real-time (LOOP_PLAYBACK_FPS), not
+            # the FPS spinbox — so it always looks like the acquisition rate.
+            self.playback_timer.start(
+                max(1, int(round(1000 / self.LOOP_PLAYBACK_FPS)))
+            )
         finally:
             self._playback_internal_change = False
-
-        # Loop playback is pinned to real-time (LOOP_PLAYBACK_FPS), not the
-        # FPS spinbox — so it always looks like the actual pullback speed.
-        self.playback_timer.start(
-            max(1, int(round(1000 / self.LOOP_PLAYBACK_FPS)))
-        )
+            self._playback_arming = False
         self._sync_playback_control(anchor_index)
         self.status(
             self.tr(
@@ -6723,6 +6819,8 @@ class LabelingWidget(LabelDialog):
     def _stop_playback(self, restore_anchor=True):
         previous_mode = self._playback_mode
         anchor_index = self._playback_anchor_index
+        if previous_mode == self.PLAYBACK_LOOP and self.dirty:
+            self._save_current_loop_frame_edits()
         self.playback_timer.stop()
 
         # Clear the active mode BEFORE reloading the anchor frame so the
@@ -6752,6 +6850,8 @@ class LabelingWidget(LabelDialog):
             self._playback_internal_change = False
 
         self._playback_anchor_index = None
+        self._playback_anchor_image_size = None
+        self._playback_anchor_image_data = None
         self._playback_loop_indices = []
         self._playback_loop_start_index = None
         self._playback_loop_current_index = None
@@ -6820,11 +6920,11 @@ class LabelingWidget(LabelDialog):
         return bool(loaded)
 
     def _open_next_loop_frame(self):
-        """Switch to the next frame image inside the loop.
+        """Preview the next loop frame without touching label files.
 
-        Only the image is cycled; annotations always stay on the anchor
-        frame so the user can review or edit labels while the loop runs.
-        Edits are saved to the anchor frame when playback stops.
+        Only the canvas pixmap changes. The anchor frame stays the open
+        document (``filename``, ``image_path``, shapes, and image size), so
+        an autosave cannot retarget a neighbour frame's JSON.
         """
         if (
             self._playback_mode != self.PLAYBACK_LOOP
@@ -6833,24 +6933,6 @@ class LabelingWidget(LabelDialog):
         ):
             return
 
-        # Keep the in-progress drawing state so a loop frame switch does not
-        # interrupt an active annotation.
-        drawing_state = {
-            "current_shape": (
-                self.canvas.current.copy()
-                if self.canvas.current is not None
-                else None
-            ),
-            "drawing_mode": self.canvas.mode,
-            "is_drawing": self.canvas.drawing(),
-            "line_points": (
-                self.canvas.line.points.copy()
-                if self.canvas.line is not None
-                and self.canvas.line.points
-                else []
-            ),
-        }
-
         self._playback_loop_current_index = (
             self._playback_loop_current_index + 1
         ) % len(self._playback_loop_indices)
@@ -6858,23 +6940,19 @@ class LabelingWidget(LabelDialog):
             self._playback_loop_current_index
         ]
 
-        if not self._load_image_only_for_loop(frame_index):
+        self._playback_internal_change = True
+        try:
+            loaded = self._load_image_only_for_loop(frame_index)
+        finally:
+            self._playback_internal_change = False
+        if not loaded:
             self._stop_playback()
             self.status(
-                self.tr("Loop playback stopped: failed to load a frame"), 3000
+                self.tr("Loop playback stopped: failed to load a frame"),
+                3000,
             )
             return
 
-        # Restore the in-progress drawing state so drawing is not interrupted
-        # by a loop frame switch.
-        if drawing_state["current_shape"] is not None:
-            self.canvas.current = drawing_state["current_shape"]
-            self.canvas.mode = drawing_state["drawing_mode"]
-            self.canvas.line.points = drawing_state["line_points"]
-            if drawing_state["is_drawing"]:
-                self.canvas.drawing_polygon.emit(True)
-
-        self.canvas.update()
         self._playback_display_index = frame_index
         self._sync_playback_control(frame_index)
 
@@ -6898,11 +6976,7 @@ class LabelingWidget(LabelDialog):
                 ]
             if anchor_filename is None:
                 return False
-            label_file = osp.splitext(anchor_filename)[0] + ".json"
-            if self.output_dir:
-                label_file = osp.join(
-                    self.output_dir, osp.basename(label_file)
-                )
+            label_file = self._label_file_for_image(anchor_filename)
             if self.save_labels(label_file):
                 self.set_clean()
                 return True
@@ -6912,7 +6986,7 @@ class LabelingWidget(LabelDialog):
             return False
 
     def _load_image_only_for_loop(self, frame_index):
-        """Load only the image for a looped frame, keeping shapes intact."""
+        """Preview one loop frame without changing the anchor document."""
 
         if not 0 <= frame_index < len(self.image_list):
             return False
@@ -6921,16 +6995,13 @@ class LabelingWidget(LabelDialog):
             image_data = LabelFile.load_image_file(filename)
             if not image_data:
                 return False
-            self.image_data = image_data
-            self.image_path = filename
-            self.filename = filename
             image = utils.img_data_to_qimage(image_data, filename)
             if image.isNull():
                 return False
-            self.image = image
-            self.canvas.load_pixmap(
-                QtGui.QPixmap.fromImage(image), clear_shapes=False
-            )
+            # ``set_preview_pixmap`` does not cancel drawing, clear shapes,
+            # or retarget ``filename`` / ``image_path`` / ``image``.
+            self.canvas.set_preview_pixmap(QtGui.QPixmap.fromImage(image))
+            self.canvas.adjustSize()
             return True
         except Exception as error:
             logger.error(
@@ -6953,38 +7024,49 @@ class LabelingWidget(LabelDialog):
     def _ensure_all_edits_saved(self):
         """Ensure all pending edits are persisted before playback starts."""
 
-        if self.dirty:
-            if self._playback_mode == self.PLAYBACK_LOOP:
-                return self._ensure_loop_edits_saved()
-            filename = osp.splitext(self.image_path)[0] + ".json"
-            if self.output_dir:
-                filename = osp.join(
-                    self.output_dir, osp.basename(filename)
-                )
-            return self.save_labels(filename)
-        return True
+        if not self.dirty:
+            return True
+        if self._playback_mode == self.PLAYBACK_LOOP:
+            saved = self._ensure_loop_edits_saved()
+        elif not self.image_path:
+            return False
+        else:
+            saved = self.save_labels(
+                self._label_file_for_image(self.image_path)
+            )
+        if saved:
+            self.set_clean()
+        return saved
 
     def _load_loop_anchor_frame_with_latest_data(self):
         """Reload the anchor frame from disk with its latest data."""
 
-        if self._playback_anchor_index is None:
-            self.load_file(self.filename)
-            return
-        if not 0 <= self._playback_anchor_index < len(self.image_list):
-            self.load_file(self.filename)
-            return
-        anchor_filename = self.image_list[self._playback_anchor_index]
+        keep_previous = self._config["keep_prev"]
+        # Reloading the anchor is a display refresh. ``keep_prev`` would
+        # copy shapes onto an empty frame and autosave them.
+        self._config["keep_prev"] = False
         try:
-            self.load_file(anchor_filename)
-            self.filename = anchor_filename
-        except Exception as error:
-            logger.error(
-                f"Failed to reload anchor frame {anchor_filename}: {error}"
-            )
-            try:
+            if self._playback_anchor_index is None:
                 self.load_file(self.filename)
-            except Exception:
-                pass
+                return
+            if not 0 <= self._playback_anchor_index < len(self.image_list):
+                self.load_file(self.filename)
+                return
+            anchor_filename = self.image_list[self._playback_anchor_index]
+            try:
+                self.load_file(anchor_filename)
+                self.filename = anchor_filename
+            except Exception as error:
+                logger.error(
+                    "Failed to reload anchor frame "
+                    f"{anchor_filename}: {error}"
+                )
+                try:
+                    self.load_file(self.filename)
+                except Exception:
+                    pass
+        finally:
+            self._config["keep_prev"] = keep_previous
 
     def _playback_step(self, offset):
         if self._playback_mode is not None:

@@ -103,7 +103,8 @@ class PlaybackControlBar(QtWidgets.QWidget):
     playback_state_requested = QtCore.pyqtSignal(bool)
     # Kept for integrations that only need a generic playback request.
     play_requested = QtCore.pyqtSignal()
-    loop_requested = QtCore.pyqtSignal()
+    # True asks the session to start loop playback; False asks it to stop.
+    loop_requested = QtCore.pyqtSignal(bool)
     fps_changed = QtCore.pyqtSignal(int)
     loop_radius_changed = QtCore.pyqtSignal(int)
 
@@ -114,10 +115,8 @@ class PlaybackControlBar(QtWidgets.QWidget):
         self._is_playing = False
         self._is_looping = False
         self._slider_dragging = False
-        self._pause_requested_on_press = False
-        self._last_pause_request_ms = None
-        self._request_clock = QtCore.QElapsedTimer()
-        self._request_clock.start()
+        self._play_handled_on_press = False
+        self._loop_handled_on_press = False
 
         self._create_ui()
         self._connect_signals()
@@ -217,6 +216,7 @@ class PlaybackControlBar(QtWidgets.QWidget):
         )
         self.play_button.pressed.connect(self._on_play_pressed)
         self.play_button.clicked.connect(self._on_play_clicked)
+        self.loop_button.pressed.connect(self._on_loop_pressed)
         self.loop_button.clicked.connect(self._on_loop_clicked)
         self.progress_slider.sliderPressed.connect(self._on_slider_pressed)
         self.progress_slider.sliderReleased.connect(self._on_slider_released)
@@ -233,49 +233,50 @@ class PlaybackControlBar(QtWidgets.QWidget):
         self.play_requested.emit()
 
     def _on_play_pressed(self):
-        # Pause on press instead of waiting for release. During high-FPS frame
-        # loading, this makes stopping immediate even if the pointer moves off
-        # the small button before release.
-        self._pause_requested_on_press = False
-        if not (self._is_playing or self.play_button.isChecked()):
+        # Act on press instead of waiting for release. During high-FPS frame
+        # loading the playback bar can move, or the pointer can leave the
+        # small button, before mouse release. A release-only handler then
+        # drops the click.
+        if not self.play_button.isEnabled():
             return
-
-        self._pause_requested_on_press = True
-        self._last_pause_request_ms = self._request_clock.elapsed()
-        self._is_playing = False
-        self._sync_play_button()
-        self._emit_playback_state_request(False)
+        self._play_handled_on_press = True
+        should_play = not (self._is_playing or self.play_button.isChecked())
+        self._present_playback_request(should_play)
 
     def _on_play_clicked(self, checked):
-        if self._pause_requested_on_press:
-            self._pause_requested_on_press = False
-            self._is_playing = False
+        if self._play_handled_on_press:
+            self._play_handled_on_press = False
+            # QAbstractButton toggles a checkable button again on release.
             self._sync_play_button()
             return
+        self._present_playback_request(bool(checked))
 
-        should_play = bool(checked)
-        if should_play and self._last_pause_request_ms is not None:
-            elapsed = (
-                self._request_clock.elapsed() - self._last_pause_request_ms
-            )
-            if elapsed < QtWidgets.QApplication.doubleClickInterval():
-                # A second click commonly arrives because the first pause did
-                # not look immediate. Keep the stopped state instead of
-                # interpreting that click as a new play request.
-                self._is_playing = False
-                self._sync_play_button()
-                self._emit_playback_state_request(False)
-                return
-
-        if not should_play:
-            self._last_pause_request_ms = self._request_clock.elapsed()
-        self._is_playing = should_play
+    def _present_playback_request(self, should_play):
+        should_play = bool(should_play)
+        # A single frame cannot play, but the request is still delivered so
+        # the session can explain that instead of ignoring the click.
+        self._is_playing = should_play and self._total_frames > 1
         self._sync_play_button()
         self._emit_playback_state_request(should_play)
 
+    def _on_loop_pressed(self):
+        if not self.loop_button.isEnabled():
+            return
+        self._loop_handled_on_press = True
+        self._present_loop_request(not self._is_looping)
+
     def _on_loop_clicked(self, checked):
-        self._is_looping = bool(checked)
-        self.loop_requested.emit()
+        if self._loop_handled_on_press:
+            self._loop_handled_on_press = False
+            self.loop_button.setChecked(self._is_looping)
+            return
+        self._present_loop_request(bool(checked))
+
+    def _present_loop_request(self, should_loop):
+        should_loop = bool(should_loop)
+        self._is_looping = should_loop and self._total_frames > 1
+        self.loop_button.setChecked(self._is_looping)
+        self.loop_requested.emit(should_loop)
 
     def _on_slider_pressed(self):
         self._slider_dragging = True
@@ -338,13 +339,16 @@ class PlaybackControlBar(QtWidgets.QWidget):
         self.next_button.setEnabled(has_next)
 
     def _sync_ui(self):
+        has_frames = self._total_frames >= 1
         has_multiple_frames = self._total_frames > 1
         if not has_multiple_frames:
             self._is_playing = False
             self._is_looping = False
 
-        self.play_button.setEnabled(has_multiple_frames)
-        self.loop_button.setEnabled(has_multiple_frames)
+        # Keep play/loop enabled for a single frame so the click can be
+        # explained. Stepping and seeking still need another frame.
+        self.play_button.setEnabled(has_frames)
+        self.loop_button.setEnabled(has_frames)
         self.progress_slider.setEnabled(has_multiple_frames)
         self.loop_button.setChecked(self._is_looping)
         self._sync_play_button()
