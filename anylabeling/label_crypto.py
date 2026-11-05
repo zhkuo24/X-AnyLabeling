@@ -327,16 +327,34 @@ def _write_new_file(path: str, data: bytes, mode: int) -> None:
         raise
 
 
+def _tighten_private_fd(fd: int) -> None:
+    """Force mode 0600 on an open temp file when the OS can do it.
+
+    ``os.fchmod`` is Unix-only. Windows raises ``AttributeError`` because
+    the attribute is missing. ``mkstemp`` already requests mode 0600, and
+    the caller still ``chmod``s the path after the replace. A missing
+    ``fchmod`` is a no-op so the write can finish; it does not change
+    encryption or who may decrypt.
+    """
+
+    fchmod = getattr(os, "fchmod", None)
+    if not callable(fchmod):
+        return
+    fchmod(fd, 0o600)
+
+
 def _write_private_replace(path: str, data: bytes) -> None:
     directory = osp.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     temporary = None
+    fd = None
     try:
         fd, temporary = tempfile.mkstemp(
             prefix=".xal_", suffix=".tmp", dir=directory
         )
-        os.fchmod(fd, 0o600)
+        _tighten_private_fd(fd)
         with os.fdopen(fd, "wb") as handle:
+            fd = None
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -344,6 +362,14 @@ def _write_private_replace(path: str, data: bytes) -> None:
         os.chmod(path, 0o600)
         temporary = None
     finally:
+        if fd is not None:
+            # Close before unlinking. If ``fchmod`` fails first, the
+            # descriptor is still open and Windows refuses to delete the
+            # temp file (WinError 32).
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         if temporary and osp.exists(temporary):
             try:
                 os.remove(temporary)
