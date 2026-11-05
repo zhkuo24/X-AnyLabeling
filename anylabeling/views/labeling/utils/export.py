@@ -20,12 +20,6 @@ from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import *
 
 
-def _source_label_path(image_file, output_dir):
-    """Encrypted label if present, otherwise the legacy JSON path."""
-
-    return LabelConverter.resolve_xlabel_path(image_file, output_dir)
-
-
 class ExportThread(QThread):
     finished = pyqtSignal(bool, str)
 
@@ -81,34 +75,6 @@ class ExportThread(QThread):
             self.finished.emit(False, str(e))
 
 
-def _allow_training_export(self) -> bool:
-    from anylabeling.label_crypto import (
-        TRAINING_EXPORT_DENIED,
-        training_export_allowed,
-    )
-
-    if training_export_allowed():
-        return True
-    popup = Popup(
-        self.tr(TRAINING_EXPORT_DENIED),
-        self,
-        icon=new_icon_path("warning", "svg"),
-    )
-    popup.show_popup(self, popup_height=80, position="center")
-    return False
-
-
-def _guard_training_export(fn):
-    def wrapped(self, *args, **kwargs):
-        if not _allow_training_export(self):
-            return None
-        return fn(self, *args, **kwargs)
-
-    wrapped.__name__ = getattr(fn, "__name__", "export")
-    wrapped.__doc__ = fn.__doc__
-    return wrapped
-
-
 def _check_filename_exist(self):
     if not self.may_continue():
         return False
@@ -125,7 +91,6 @@ def _check_filename_exist(self):
     return True
 
 
-@_guard_training_export
 def export_yolo_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -248,7 +213,9 @@ def export_yolo_annotation(self, mode):
     image_list = self.image_list if self.image_list else [self.filename]
 
     def get_label_file(image_file):
-        return _source_label_path(image_file, self.output_dir)
+        label_file_name = osp.splitext(osp.basename(image_file))[0] + ".json"
+        label_dir = self.output_dir or osp.dirname(image_file)
+        return osp.join(label_dir, label_file_name)
 
     obb_boundary_policy = "keep"
     if mode == "obb":
@@ -257,7 +224,7 @@ def export_yolo_annotation(self, mode):
             label_file = get_label_file(image_file)
             if not osp.exists(label_file):
                 continue
-            data = converter.read_xlabel(label_file)
+            data = converter.read_json(label_file)
             image_width = data["imageWidth"]
             image_height = data["imageHeight"]
             for shape in data["shapes"]:
@@ -395,7 +362,6 @@ def export_yolo_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
-@_guard_training_export
 def export_voc_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -533,8 +499,13 @@ def export_voc_annotation(self, mode):
     try:
         for i, image_file in enumerate(image_list):
             image_file_name = osp.basename(image_file)
+            label_file_name = osp.splitext(image_file_name)[0] + ".json"
             dst_file_name = osp.splitext(image_file_name)[0] + ".xml"
-            src_file = _source_label_path(image_file, self.output_dir)
+
+            if self.output_dir:
+                src_file = osp.join(self.output_dir, label_file_name)
+            else:
+                src_file = osp.join(osp.dirname(image_file), label_file_name)
             dst_file = osp.join(save_path, dst_file_name)
 
             is_empty_file = converter.custom_to_voc(
@@ -578,7 +549,6 @@ def export_voc_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
-@_guard_training_export
 def export_coco_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -765,7 +735,6 @@ def export_coco_annotation(self, mode):
     progress_dialog.canceled.connect(self.export_thread.terminate)
 
 
-@_guard_training_export
 def export_dota_annotation(self):
     if not _check_filename_exist(self):
         return
@@ -898,8 +867,13 @@ def export_dota_annotation(self):
     try:
         for i, image_file in enumerate(image_list):
             image_file_name = osp.basename(image_file)
+            label_file_name = osp.splitext(image_file_name)[0] + ".json"
             dst_file_name = osp.splitext(image_file_name)[0] + ".txt"
-            src_file = _source_label_path(image_file, self.output_dir)
+
+            if self.output_dir:
+                src_file = osp.join(self.output_dir, label_file_name)
+            else:
+                src_file = osp.join(osp.dirname(image_file), label_file_name)
             dst_file = osp.join(save_path, dst_file_name)
 
             if not osp.exists(src_file):
@@ -937,7 +911,6 @@ def export_dota_annotation(self):
         popup.show_popup(self, position="center")
 
 
-@_guard_training_export
 def export_mask_annotation(self):
     if not _check_filename_exist(self):
         return
@@ -1070,8 +1043,13 @@ def export_mask_annotation(self):
     try:
         for i, image_file in enumerate(image_list):
             image_file_name = osp.basename(image_file)
+            label_file_name = osp.splitext(image_file_name)[0] + ".json"
             dst_file_name = osp.splitext(image_file_name)[0] + ".png"
-            src_file = _source_label_path(image_file, self.output_dir)
+
+            if self.output_dir:
+                src_file = osp.join(self.output_dir, label_file_name)
+            else:
+                src_file = osp.join(osp.dirname(image_file), label_file_name)
             dst_file = osp.join(save_path, dst_file_name)
 
             if not osp.exists(src_file):
@@ -1109,7 +1087,6 @@ def export_mask_annotation(self):
         popup.show_popup(self, position="center")
 
 
-@_guard_training_export
 def export_mot_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -1274,12 +1251,10 @@ def export_mot_annotation(self, mode):
     progress_dialog.canceled.connect(self.export_thread.terminate)
 
 
-@_guard_training_export
 def export_odvg_annotation(self):
     export_mot_annotation(self, "odvg")
 
 
-@_guard_training_export
 def export_pporc_annotation(self, mode):
     if not _check_filename_exist(self):
         return
@@ -1416,7 +1391,8 @@ def export_pporc_annotation(self, mode):
     try:
         for i, image_file in enumerate(image_list):
             image_file_name = osp.basename(image_file)
-            label_file = _source_label_path(image_file, self.output_dir)
+            label_file_name = osp.splitext(image_file_name)[0] + ".json"
+            label_file = osp.join(osp.dirname(image_file), label_file_name)
             if mode == "rec":
                 converter.custom_to_ppocr(
                     image_file, label_file, save_path, mode
@@ -1463,7 +1439,6 @@ def export_pporc_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
-@_guard_training_export
 def export_vlm_r1_ovd_annotation(self):
     if not _check_filename_exist(self):
         return

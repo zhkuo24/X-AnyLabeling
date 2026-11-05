@@ -37,29 +37,6 @@ from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.vqa.dialogs import ExportLabelsDialog
 from anylabeling.views.labeling.widgets.popup import Popup
 
-
-def update_label_document(label_file, mutator):
-    """Apply ``mutator`` and encrypt the label back.
-
-    Returns an error string when the file cannot be decrypted or written.
-    The file is left unchanged in that case. Missing files and ordinary
-    data errors are logged and skipped.
-    """
-
-    from anylabeling.views.labeling.label_file import LabelFile, LabelFileError
-
-    try:
-        data = LabelFile.read_document(label_file)
-        if mutator(data):
-            LabelFile.write_document(label_file, data)
-    except LabelFileError as exc:
-        logger.error(f"Failed to update label {label_file}: {exc}")
-        return f"{label_file}: {exc}"
-    except (FileNotFoundError, KeyError, OSError) as exc:
-        logger.warning(f"Skipped label {label_file}: {exc}")
-    return None
-
-
 PANEL_BUTTON_SIZE = 28
 PANEL_ICON_SIZE = 16
 PANEL_ICON_RENDER_SCALE = 2
@@ -837,19 +814,20 @@ class VQADialog(QDialog):
             deleted_options (set): Set of deleted option values
             default_value: Default value to set
         """
+        try:
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        def mutate(data):
-            if "vqaData" not in data or component_title not in data["vqaData"]:
-                return False
-            current_value = data["vqaData"][component_title]
-            if not value_contains_deleted_options(
-                current_value, deleted_options
-            ):
-                return False
-            data["vqaData"][component_title] = default_value
-            return True
-
-        return update_label_document(label_file, mutate)
+            if "vqaData" in data and component_title in data["vqaData"]:
+                current_value = data["vqaData"][component_title]
+                if value_contains_deleted_options(
+                    current_value, deleted_options
+                ):
+                    data["vqaData"][component_title] = default_value
+                    with open(label_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+        except (json.JSONDecodeError, FileNotFoundError, KeyError):
+            pass
 
     def update_modified_options(self, component_title, modified_mapping):
         """
@@ -901,20 +879,21 @@ class VQADialog(QDialog):
             component_title (str): Title of the component
             modified_mapping (dict): Mapping of old to new option values
         """
+        try:
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        def mutate(data):
-            if "vqaData" not in data or component_title not in data["vqaData"]:
-                return False
-            current_value = data["vqaData"][component_title]
-            updated_value = apply_option_mapping(
-                current_value, modified_mapping
-            )
-            if updated_value == current_value:
-                return False
-            data["vqaData"][component_title] = updated_value
-            return True
-
-        return update_label_document(label_file, mutate)
+            if "vqaData" in data and component_title in data["vqaData"]:
+                current_value = data["vqaData"][component_title]
+                updated_value = apply_option_mapping(
+                    current_value, modified_mapping
+                )
+                if updated_value != current_value:
+                    data["vqaData"][component_title] = updated_value
+                    with open(label_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+        except (json.JSONDecodeError, FileNotFoundError, KeyError):
+            pass
 
     def rebuild_component_options(self, component_data, new_options):
         """
@@ -1342,16 +1321,20 @@ class VQADialog(QDialog):
             component_title (str): Title of the component
             default_value: Default value for the component
         """
+        try:
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        def mutate(data):
             if "vqaData" not in data:
                 data["vqaData"] = {}
-            if component_title in data["vqaData"]:
-                return False
-            data["vqaData"][component_title] = default_value
-            return True
 
-        return update_label_document(label_file, mutate)
+            if component_title not in data["vqaData"]:
+                data["vqaData"][component_title] = default_value
+
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+        except (json.JSONDecodeError, FileNotFoundError, KeyError):
+            pass
 
     def clear_all_components(self):
         """
@@ -1509,13 +1492,6 @@ class VQADialog(QDialog):
         """
         Export all annotation data to a JSONL file.
         """
-        from anylabeling.views.labeling.utils.export import (
-            _allow_training_export,
-        )
-
-        if not _allow_training_export(self):
-            return
-
         if not self.image_files:
             QMessageBox.warning(
                 self, self.tr("Warning"), self.tr("No images loaded!")
@@ -1565,16 +1541,15 @@ class VQADialog(QDialog):
                 )
                 if os.path.exists(label_file_path):
                     try:
-                        from anylabeling.views.labeling.label_file import (
-                            LabelFile,
-                        )
-
-                        label_data_json = LabelFile.read_document(
-                            label_file_path
-                        )
-                        vqa_data = label_data_json.get("vqaData", {})
-                        all_data.update(vqa_data)
-                        all_data["shapes"] = label_data_json.get("shapes", [])
+                        with open(
+                            label_file_path, "r", encoding="utf-8"
+                        ) as label_f:
+                            label_data_json = json.load(label_f)
+                            vqa_data = label_data_json.get("vqaData", {})
+                            all_data.update(vqa_data)
+                            all_data["shapes"] = label_data_json.get(
+                                "shapes", []
+                            )
                     except Exception as e:
                         logger.warning(
                             f"Failed to load label file {label_file_path}: {e}"
@@ -1744,14 +1719,16 @@ class VQADialog(QDialog):
             old_title (str): Previous component title
             new_title (str): New component title
         """
+        try:
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        def mutate(data):
-            if "vqaData" not in data or old_title not in data["vqaData"]:
-                return False
-            data["vqaData"][new_title] = data["vqaData"].pop(old_title)
-            return True
-
-        return update_label_document(label_file, mutate)
+            if "vqaData" in data and old_title in data["vqaData"]:
+                data["vqaData"][new_title] = data["vqaData"].pop(old_title)
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+        except (json.JSONDecodeError, FileNotFoundError, KeyError):
+            pass
 
     def remove_component_from_json_file(self, label_file, component_title):
         """
@@ -1761,14 +1738,16 @@ class VQADialog(QDialog):
             label_file (str): Path to the JSON label file
             component_title (str): Title of the component to remove
         """
+        try:
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        def mutate(data):
-            if "vqaData" not in data or component_title not in data["vqaData"]:
-                return False
-            del data["vqaData"][component_title]
-            return True
-
-        return update_label_document(label_file, mutate)
+            if "vqaData" in data and component_title in data["vqaData"]:
+                del data["vqaData"][component_title]
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+        except (json.JSONDecodeError, FileNotFoundError, KeyError):
+            pass
 
     def apply_to_all_label_files(self, callback):
         """
@@ -1777,48 +1756,17 @@ class VQADialog(QDialog):
         Args:
             callback (function): Function to apply to each label file
         """
-        from anylabeling.views.labeling.label_file import LabelFile
-
-        parent = self.parent()
-        errors = []
-        label_files = []
-        if parent.output_dir:
-            label_files = parent._labels_in_directory(parent.output_dir)
-        elif parent.image_list:
-            for image_file in parent.image_list:
-                label_file = LabelFile.path_for_image(
-                    image_file, parent.output_dir
-                )
+        if self.parent().output_dir:
+            label_dir = self.parent().output_dir
+            for file_name in os.listdir(label_dir):
+                if file_name.endswith(".json"):
+                    label_file = os.path.join(label_dir, file_name)
+                    callback(label_file)
+        elif self.parent().image_list:
+            for image_file in self.parent().image_list:
+                label_file = os.path.splitext(image_file)[0] + ".json"
                 if os.path.exists(label_file):
-                    label_files.append(label_file)
-        for label_file in label_files:
-            error = callback(label_file)
-            if error:
-                errors.append(str(error))
-        if errors:
-            self._report_label_write_failures(errors)
-
-    def _report_label_write_failures(self, errors):
-        logger.error(
-            f"Label updates failed for {len(errors)} file(s):\n"
-            + "\n".join(errors)
-        )
-        shown = errors[:8]
-        extra = ""
-        if len(errors) > len(shown):
-            extra = "\n" + self.tr("… and %d more.") % (
-                len(errors) - len(shown)
-            )
-        parent = self if isinstance(self, QWidget) else None
-        QMessageBox.critical(
-            parent,
-            self.tr("Label update failed"),
-            self.tr(
-                "Could not update %d label file(s). "
-                "Those files were left unchanged.\n%s%s"
-            )
-            % (len(errors), "\n".join(shown), extra),
-        )
+                    callback(label_file)
 
     def update_dropdown_options(
         self, component_data, old_options, new_options

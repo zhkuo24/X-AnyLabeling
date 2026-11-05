@@ -128,12 +128,6 @@ def _settings_translation_markers() -> None:
         "SettingsDialog",
         "Qt default is 256 MB. Use 0 to disable the limit.",
     )
-    QCoreApplication.translate("SettingsDialog", "Label Key File")
-    QCoreApplication.translate(
-        "SettingsDialog",
-        "Path to a 32-byte key file from xlabel-keygen. "
-        "Required to save labels. The key is loaded once into memory.",
-    )
     QCoreApplication.translate(
         "SettingsDialog",
         "Allow checked state changes directly from the file list.",
@@ -246,8 +240,6 @@ SETTINGS_GENERAL_KEYS = (
     "model_hub",
     "logger_level",
     "qt_image_allocation_limit",
-    "label_credential_file",
-    "label_master_key_file",
 )
 
 SETTINGS_SHAPE_KEYS = (
@@ -327,7 +319,6 @@ EXCLUDED_KEYS = frozenset(
         "remote_server_settings.server_url",
         "remote_server_settings.api_key",
         "digit_shortcuts",
-        "label_key_file",
     }
 )
 
@@ -1075,40 +1066,6 @@ def _non_shortcut_fields() -> list[SettingField]:
             description=QT_TRANSLATE_NOOP(
                 SETTINGS_TRANSLATION_CONTEXT,
                 "Choose from fonts available on this system.",
-            ),
-        ),
-        SettingField(
-            "label_credential_file",
-            QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT, "Annotator Credential"
-            ),
-            "str",
-            "General",
-            "File",
-            "Encryption",
-            allow_none=True,
-            description=QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT,
-                "Path to a .xalk credential from xlabel-wrap. "
-                "The passphrase unlocks labels in memory for editing. "
-                "Do not put the master key or a raw project key here.",
-            ),
-        ),
-        SettingField(
-            "label_master_key_file",
-            QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT, "Algorithm Master Key"
-            ),
-            "str",
-            "General",
-            "File",
-            "Encryption",
-            allow_none=True,
-            description=QT_TRANSLATE_NOOP(
-                SETTINGS_TRANSLATION_CONTEXT,
-                "Algorithm machine only. Path to the 32-byte master key "
-                "from xlabel-keygen. Leave empty on annotator machines. "
-                "Unlocks xlabel-decrypt and plaintext training export.",
             ),
         ),
         SettingField(

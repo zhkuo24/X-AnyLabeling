@@ -53,11 +53,6 @@ from .utils.style import (
     get_settings_button_style,
     get_toolbar_scroll_area_style,
 )
-from anylabeling.label_crypto import (
-    LabelCryptoError,
-    configure_from_config,
-    training_export_allowed,
-)
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
 from .logger import logger
@@ -110,7 +105,6 @@ LABEL_OPACITY = 128
 CHECKED_FIELD = "checked"
 FILE_CHECKED_COLOR = "#22A06B"
 FILE_UNCHECKED_COLOR = "#8C98A4"
-FILE_DECRYPT_FAILED_COLOR = "#D14343"
 CHECKED_FIELD_PATTERN = re.compile(r'"checked"\s*:\s*(true|false)')
 
 # AI-inferred annotations are tagged with ``attributes[AI_SOURCE_KEY]`` and
@@ -300,7 +294,6 @@ class LabelingWidget(LabelDialog):
         if config is None:
             config = get_config()
         self._config = config
-        self._label_key_error = None
         self.label_flags = self._config["label_flags"]
         self.label_loop_count = -1
         self.label_loop_shapes = None
@@ -338,7 +331,6 @@ class LabelingWidget(LabelDialog):
         Shape.line_width = self._config["shape"]["line_width"]
 
         super(LabelDialog, self).__init__()
-        self._load_label_session(queued_error=True)
 
         # Whether we need to save or not.
         self.dirty = False
@@ -499,7 +491,6 @@ class LabelingWidget(LabelDialog):
         self.file_status_icons = {
             True: _create_file_status_icon(FILE_CHECKED_COLOR),
             False: _create_file_status_icon(FILE_UNCHECKED_COLOR),
-            "error": _create_file_status_icon(FILE_DECRYPT_FAILED_COLOR),
         }
         self.file_list_widget.itemSelectionChanged.connect(
             self.file_selection_changed
@@ -2308,7 +2299,6 @@ class LabelingWidget(LabelDialog):
                 export_vlm_r1_ovd_annotation,
             ),
         )
-        self._sync_training_export_actions()
         utils.add_actions(
             self.menus.view,
             (
@@ -3210,80 +3200,6 @@ class LabelingWidget(LabelDialog):
     def status(self, message, delay=5000):
         self.statusBar().showMessage(message, delay)
 
-    def _remember_label_key_error(self, exc):
-        self._label_key_error = str(exc)
-        logger.error(f"Failed to load label encryption key: {exc}")
-
-    def _prompt_label_passphrase(self):
-        text, ok = QtWidgets.QInputDialog.getText(
-            self,
-            self.tr("Annotator credential"),
-            self.tr(
-                "Enter the passphrase for the .xalk credential. "
-                "This unlocks labels in memory only and does not enable "
-                "xlabel-decrypt."
-            ),
-            QtWidgets.QLineEdit.EchoMode.Password,
-        )
-        if not ok or not str(text).strip():
-            return None
-        return text
-
-    def _load_label_session(self, queued_error=False):
-        try:
-            configure_from_config(
-                self._config,
-                prompter=self._prompt_label_passphrase,
-            )
-        except LabelCryptoError as exc:
-            self._remember_label_key_error(exc)
-            if queued_error:
-                self.queue_event(self._present_label_key_error)
-            else:
-                self._present_label_key_error()
-        else:
-            if getattr(self, "_label_key_error", None):
-                self._label_key_error = None
-                self.status(self.tr("Label credential loaded."), 5000)
-        self._sync_training_export_actions()
-
-    def _sync_training_export_actions(self):
-        menu = getattr(getattr(self, "menus", None), "export", None)
-        if menu is None:
-            return
-        allowed = training_export_allowed()
-        for action in menu.actions():
-            if action.isSeparator():
-                continue
-            action.setEnabled(allowed)
-
-    def _present_label_key_error(self):
-        message = self._label_key_error
-        if not message:
-            return
-        self.status(self.tr("Label key failed to load: %s") % message, 0)
-        QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Label encryption key"),
-            self.tr(
-                "Could not unlock label encryption. Annotators set a "
-                ".xalk credential; the algorithm machine sets the master "
-                "key. Saves stay blocked until then."
-                "<br/><br/>%s"
-            )
-            % message,
-        )
-
-    def report_label_key_error(self, exc):
-        self._remember_label_key_error(exc)
-        self._present_label_key_error()
-
-    def report_label_key_loaded(self):
-        if not getattr(self, "_label_key_error", None):
-            return
-        self._label_key_error = None
-        self.status(self.tr("Label encryption key loaded."), 5000)
-
     def reset_state(self):
         if (
             self._playback_mode is not None
@@ -3429,36 +3345,28 @@ class LabelingWidget(LabelDialog):
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
         self.set_dirty()
 
-    @staticmethod
-    def _labels_in_directory(directory):
-        found = {}
-        if not directory or not osp.isdir(directory):
-            return []
-        for file_name in os.listdir(directory):
-            ext = osp.splitext(file_name)[1].lower()
-            if ext not in {LabelFile.suffix, LabelFile.legacy_suffix}:
-                continue
-            stem = osp.splitext(file_name)[0]
-            path = osp.join(directory, file_name)
-            previous = found.get(stem)
-            if previous is None or ext == LabelFile.suffix:
-                found[stem] = path
-        return list(found.values())
-
     def get_label_file_list(self):
         label_file_list = []
         if not self.image_list and self.filename:
-            label_file = LabelFile.path_for_image(
-                self.filename, self.output_dir
+            dir_path, filename = osp.split(self.filename)
+            label_file = osp.join(
+                dir_path, osp.splitext(filename)[0] + ".json"
             )
             if osp.exists(label_file):
                 label_file_list = [label_file]
         elif self.image_list and not self.output_dir and self.filename:
-            label_file_list.extend(
-                self._labels_in_directory(osp.dirname(self.filename))
-            )
+            file_list = os.listdir(osp.dirname(self.filename))
+            for file_name in file_list:
+                if not file_name.endswith(".json"):
+                    continue
+                label_file_list.append(
+                    osp.join(osp.dirname(self.filename), file_name)
+                )
         if self.output_dir:
-            label_file_list.extend(self._labels_in_directory(self.output_dir))
+            for file_name in os.listdir(self.output_dir):
+                if not file_name.endswith(".json"):
+                    continue
+                label_file_list.append(osp.join(self.output_dir, file_name))
         return label_file_list
 
     def copy_shape_coordinates(self):
@@ -4128,12 +4036,6 @@ class LabelingWidget(LabelDialog):
     def _label_file_checked(self, label_file):
         if not QtCore.QFile.exists(label_file):
             return False
-        if str(label_file).lower().endswith(LabelFile.suffix):
-            try:
-                data = LabelFile.read_document(label_file)
-            except (LabelFileError, OSError, ValueError):
-                return "error"
-            return data.get("checked", False) is True
         try:
             buffer = ""
             with open(label_file, "r", encoding="utf-8") as f:
@@ -4159,7 +4061,13 @@ class LabelingWidget(LabelDialog):
         return item.data(Qt.ItemDataRole.UserRole) is True
 
     def _label_file_for_image(self, filename):
-        return LabelFile.path_for_image(filename, self.output_dir)
+        label_file = osp.splitext(filename)[0] + LabelFile.suffix
+        if self.output_dir:
+            label_file = osp.join(
+                self.output_dir,
+                osp.basename(label_file),
+            )
+        return label_file
 
     def _create_file_list_item(self, file, label_file):
         item = QtWidgets.QListWidgetItem(file)
@@ -4173,14 +4081,7 @@ class LabelingWidget(LabelDialog):
             item.setCheckState(Qt.CheckState.Checked)
         else:
             item.setCheckState(Qt.CheckState.Unchecked)
-        checked = self._label_file_checked(label_file)
-        self._set_file_item_checked(item, checked)
-        if checked == "error":
-            item.setToolTip(
-                self.tr(
-                    "Could not decrypt this label. Check the label key file."
-                )
-            )
+        self._set_file_item_checked(item, self._label_file_checked(label_file))
         return item
 
     def _current_file_item(self):
@@ -5026,7 +4927,10 @@ class LabelingWidget(LabelDialog):
             self.scroll_area.setVisible(False)
 
     def save_attributes(self, _shapes):
-        filename = LabelFile.path_for_image(self.image_path, self.output_dir)
+        filename = osp.splitext(self.image_path)[0] + ".json"
+        if self.output_dir:
+            label_file_without_path = osp.basename(filename)
+            filename = osp.join(self.output_dir, label_file_without_path)
         label_file = LabelFile()
 
         # Get current shapes
@@ -5066,9 +4970,6 @@ class LabelingWidget(LabelDialog):
                 flags=flags,
             )
             self.label_file = label_file
-            report_loaded = getattr(self, "report_label_key_loaded", None)
-            if report_loaded is not None:
-                report_loaded()
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchFlag.MatchExactly
             )
@@ -5491,9 +5392,6 @@ class LabelingWidget(LabelDialog):
                 flags=flags,
             )
             self.label_file = label_file
-            report_loaded = getattr(self, "report_label_key_loaded", None)
-            if report_loaded is not None:
-                report_loaded()
             items = self.file_list_widget.findItems(
                 source_image, Qt.MatchFlag.MatchExactly
             )
@@ -6340,9 +6238,13 @@ class LabelingWidget(LabelDialog):
                 )
                 return False
 
-            # Prefer the encrypted label, and fall back to legacy JSON.
-            image_dir = osp.dirname(filename) if self.output_dir else None
-            label_file = self._label_file_for_image(filename)
+            # assumes same name, but json extension
+            label_file = osp.splitext(filename)[0] + ".json"
+            image_dir = None
+            if self.output_dir:
+                image_dir = osp.dirname(filename)
+                label_file_without_path = osp.basename(label_file)
+                label_file = self.output_dir + "/" + label_file_without_path
 
             if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
                 label_file
@@ -7316,7 +7218,7 @@ class LabelingWidget(LabelDialog):
         path = osp.dirname(str(self.filename)) if self.filename else "."
         formats = [f"*{ext}" for ext in utils.get_supported_image_extensions()]
         filters = self.tr("Image & Label files (%s)") % " ".join(
-            formats + [f"*{LabelFile.suffix}", f"*{LabelFile.legacy_suffix}"]
+            formats + [f"*{LabelFile.suffix}"]
         )
         file_dialog = FileDialogPreview(self)
         file_dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
@@ -7501,14 +7403,20 @@ class LabelingWidget(LabelDialog):
         if self.label_file:
             return self.label_file.filename
         base = self.image_path if self.image_path else self.filename
-        if base and LabelFile.is_label_file(base):
+        if base.lower().endswith(".json"):
             return base
-        return self._label_file_for_image(base)
+        lf = osp.splitext(base)[0] + ".json"
+        if self.output_dir:
+            lf = osp.join(self.output_dir, osp.basename(lf))
+        return lf
 
     def get_image_file(self):
-        if self.filename and LabelFile.is_label_file(self.filename):
-            return self.image_path
-        return self.filename
+        if not self.filename.lower().endswith(".json"):
+            image_file = self.filename
+        else:
+            image_file = self.image_path
+
+        return image_file
 
     def delete_file(self):
         mb = QtWidgets.QMessageBox
@@ -7537,14 +7445,8 @@ class LabelingWidget(LabelDialog):
             return
 
         label_file = self.get_label_file()
-        if label_file and (
-            osp.exists(label_file)
-            or osp.exists(osp.splitext(label_file)[0] + LabelFile.suffix)
-            or osp.exists(
-                osp.splitext(label_file)[0] + LabelFile.legacy_suffix
-            )
-        ):
-            LabelFile.remove_label_pair(label_file)
+        if osp.exists(label_file):
+            os.remove(label_file)
             logger.info(f"Label file is removed: {label_file}")
 
             item = self.file_list_widget.currentItem()
@@ -7613,13 +7515,12 @@ class LabelingWidget(LabelDialog):
             label_dir_path = osp.dirname(self.filename)
             if self.output_dir:
                 label_dir_path = self.output_dir
-            label_file = LabelFile.path_for_image(image_file, label_dir_path)
+            label_name = osp.splitext(image_name)[0] + ".json"
+            label_file = osp.join(label_dir_path, label_name)
             if not osp.exists(label_file):
-                label_file = LabelFile.path_for_image(image_file, None)
-            if osp.exists(label_file) or osp.exists(
-                osp.splitext(label_file)[0] + LabelFile.legacy_suffix
-            ):
-                LabelFile.remove_label_pair(label_file)
+                label_file = osp.join(osp.dirname(image_file), label_name)
+            if osp.exists(label_file):
+                os.remove(label_file)
                 logger.info(f"Label file is removed: {image_file}")
 
             filename = None
@@ -8048,7 +7949,12 @@ class LabelingWidget(LabelDialog):
         if self._config["auto_save"]:
             self.set_dirty()
         else:
-            self.save_labels(self._label_file_for_image(self.image_path))
+            label_file = osp.splitext(self.image_path)[0] + ".json"
+            if self.output_dir:
+                label_file = osp.join(
+                    self.output_dir, osp.basename(label_file)
+                )
+            self.save_labels(label_file)
             self.set_clean()
 
         self.status(self.tr("AI annotations approved for this frame"))

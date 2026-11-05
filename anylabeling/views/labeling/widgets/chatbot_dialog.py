@@ -1672,12 +1672,13 @@ class ChatbotDialog(QDialog):
 
         for filename, result in batch_results.items():
             if result.get("content"):
-                from anylabeling.views.labeling.label_file import LabelFile
+                # Get the label file path
+                label_file = os.path.splitext(filename)[0] + ".json"
 
-                label_file = LabelFile.path_for_image(filename)
-
+                # Load existing data or create new
                 if os.path.exists(label_file):
-                    data = LabelFile.read_document(label_file)
+                    with open(label_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
                 else:
                     data = {}
 
@@ -1695,7 +1696,9 @@ class ChatbotDialog(QDialog):
                     },
                 ]
 
-                LabelFile.write_document(label_file, data)
+                # Save the file
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
 
         self.progress_dialog.close()
         if hasattr(self, "batch_complete"):
@@ -1764,12 +1767,6 @@ class ChatbotDialog(QDialog):
 
         def export_dataset():
             option_dialog.accept()
-            from anylabeling.views.labeling.utils.export import (
-                _allow_training_export,
-            )
-
-            if not _allow_training_export(self):
-                return
 
             if not self.parent().filename:
                 QMessageBox.warning(
@@ -1806,20 +1803,11 @@ class ChatbotDialog(QDialog):
             os.makedirs(temp_images_dir, exist_ok=True)
 
             try:
-                from anylabeling.views.labeling.label_file import LabelFile
+                json_files = [
+                    f for f in os.listdir(current_dir) if f.endswith(".json")
+                ]
 
-                label_files = {}
-                for file_name in os.listdir(current_dir):
-                    ext = os.path.splitext(file_name)[1].lower()
-                    if ext not in {LabelFile.suffix, LabelFile.legacy_suffix}:
-                        continue
-                    stem = os.path.splitext(file_name)[0]
-                    if stem not in label_files or ext == LabelFile.suffix:
-                        label_files[stem] = os.path.join(
-                            current_dir, file_name
-                        )
-
-                if not label_files:
+                if not json_files:
                     QMessageBox.warning(
                         self,
                         self.tr("Export Error"),
@@ -1830,9 +1818,12 @@ class ChatbotDialog(QDialog):
                     return
 
                 export_data = []
-                for file_path in label_files.values():
+                for json_file in json_files:
+                    file_path = os.path.join(current_dir, json_file)
+
                     try:
-                        data = LabelFile.read_document(file_path)
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
 
                         if not data.get("chat_history"):
                             continue
@@ -1869,7 +1860,7 @@ class ChatbotDialog(QDialog):
 
                     except Exception as e:
                         logger.error(
-                            self.tr(f"Error processing {file_path}: {str(e)}")
+                            self.tr(f"Error processing {json_file}: {str(e)}")
                         )
 
                 if not export_data:
@@ -1993,13 +1984,10 @@ class ChatbotDialog(QDialog):
                         if not found_image:
                             continue
 
-                        from anylabeling.views.labeling.label_file import (
-                            LabelFile,
+                        json_filename = (
+                            os.path.splitext(image_filename)[0] + ".json"
                         )
-
-                        json_path = LabelFile.path_for_image(
-                            os.path.join(current_dir, image_filename)
-                        )
+                        json_path = os.path.join(current_dir, json_filename)
 
                         # Prepare chat history
                         chat_history = []
@@ -2036,7 +2024,10 @@ class ChatbotDialog(QDialog):
                             "description": "",
                         }
 
-                        LabelFile.write_document(json_path, json_content)
+                        with open(json_path, "w", encoding="utf-8") as f:
+                            json.dump(
+                                json_content, f, ensure_ascii=False, indent=2
+                            )
 
                         imported_count += 1
                         break  # (NOTE) Only support one image per file
