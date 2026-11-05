@@ -1,3 +1,4 @@
+import json
 import math
 import uuid
 
@@ -371,12 +372,13 @@ def shape_conversion(self, mode):
     progress_dialog.show()
 
     try:
-        from anylabeling.views.labeling.label_file import LabelFile
-
         for i, label_file in enumerate(label_file_list):
-            data = LabelFile.read_document(label_file)
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
             _apply_shape_conversion(data, mode, params)
-            LabelFile.write_document(label_file, data)
+
+            with open(label_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
 
             progress_dialog.setValue(i)
             if progress_dialog.wasCanceled():

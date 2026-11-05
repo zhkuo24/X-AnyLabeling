@@ -163,9 +163,8 @@ class AIWorkerThread(QThread):
         label_file_path = get_label_file_path(self.image_path, output_dir)
 
         if os.path.exists(label_file_path):
-            from anylabeling.views.labeling.label_file import LabelFile
-
-            return LabelFile.read_document(label_file_path)
+            with open(label_file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
 
     def cancel(self):
         """Cancel the operation"""
@@ -294,11 +293,24 @@ def get_default_value(comp_type, options):
 
 
 def get_label_file_path(image_file, output_dir=None):
-    """Return the label path for an image, preferring an encrypted file."""
+    """
+    Get the corresponding label file path for an image file.
 
-    from anylabeling.views.labeling.label_file import LabelFile
+    Args:
+        image_file (str): Path to the image file
+        output_dir (str, optional): Output directory path. Defaults to None.
 
-    return LabelFile.path_for_image(image_file, output_dir)
+    Returns:
+        str: Path to the corresponding JSON label file
+    """
+    base_name = os.path.splitext(os.path.basename(image_file))[0]
+    label_filename = base_name + ".json"
+
+    if output_dir:
+        return os.path.join(output_dir, label_filename)
+    else:
+        image_dir = os.path.dirname(image_file)
+        return os.path.join(image_dir, label_filename)
 
 
 def get_real_modified_options(old_options, new_options, common_options):

@@ -286,17 +286,6 @@ class SettingsRuntimeApplier:
             self.apply_label_dialog_runtime(key)
             return
         if key in {
-            "label_key_file",
-            "label_credential_file",
-            "label_master_key_file",
-        }:
-            loader = getattr(self._widget, "_load_label_session", None)
-            if loader is None:
-                logger.error("Label session loader is not available")
-                return
-            loader(queued_error=False)
-            return
-        if key in {
             "model_hub",
             "device",
             "logger_level",

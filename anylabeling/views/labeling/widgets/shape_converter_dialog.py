@@ -1,8 +1,9 @@
+import json
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog
 
-from anylabeling.views.labeling.label_file import LabelFile
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.shape import (
@@ -263,9 +264,11 @@ class ShapeConverterDialog(QDialog):
             if self.cancel_requested:
                 break
             try:
-                data = LabelFile.read_document(label_file)
+                with open(label_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
                 _apply_shape_conversion(data, mode, params)
-                LabelFile.write_document(label_file, data)
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
                 self._append_success_log(label_file)
             except Exception as e:
                 error_count += 1

@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+import json
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtGui import QFont, QColor, QIntValidator
@@ -14,7 +15,6 @@ from PyQt6.QtWidgets import (
 )
 
 from anylabeling.views.labeling import utils
-from anylabeling.views.labeling.label_file import LabelFile
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.widgets.popup import Popup
@@ -363,8 +363,11 @@ class GroupIDModifyDialog(QtWidgets.QDialog):
     def get_shape_file_list(self):
         shape_file_list = []
         for image_file in self.image_file_list:
-            label_file = LabelFile.path_for_image(
-                image_file, self.parent.output_dir
+            label_dir, filename = os.path.split(image_file)
+            if self.parent.output_dir:
+                label_dir = self.parent.output_dir
+            label_file = os.path.join(
+                label_dir, os.path.splitext(filename)[0] + ".json"
             )
             if os.path.exists(label_file):
                 shape_file_list.append(label_file)
@@ -380,7 +383,8 @@ class GroupIDModifyDialog(QtWidgets.QDialog):
         gid_info = set()
 
         for shape_file in self.shape_list:
-            data = LabelFile.read_document(shape_file)
+            with open(shape_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
             shapes = data.get("shapes", [])
             for shape in shapes:
@@ -687,12 +691,16 @@ class GroupIDModifyDialog(QtWidgets.QDialog):
             for i, image_file in enumerate(self.image_file_list):
                 if i < start_index - 1 or i > end_index - 1:
                     continue
-                label_file = LabelFile.path_for_image(
-                    image_file, self.parent.output_dir
+                label_dir, filename = os.path.split(image_file)
+                if self.parent.output_dir:
+                    label_dir = self.parent.output_dir
+                label_file = os.path.join(
+                    label_dir, os.path.splitext(filename)[0] + ".json"
                 )
                 if not os.path.exists(label_file):
                     continue
-                data = LabelFile.read_document(label_file)
+                with open(label_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
 
                 src_shapes, dst_shapes = data["shapes"], []
                 for shape in reversed(src_shapes):
@@ -708,7 +716,9 @@ class GroupIDModifyDialog(QtWidgets.QDialog):
                             continue
                     dst_shapes.append(shape)
                 data["shapes"] = dst_shapes
-                LabelFile.write_document(label_file, data)
+
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
 
             return True
 
@@ -1121,12 +1131,16 @@ class LabelModifyDialog(QtWidgets.QDialog):
             for i, image_file in enumerate(self.image_file_list):
                 if i < start_index - 1 or i > end_index - 1:
                     continue
-                label_file = LabelFile.path_for_image(
-                    image_file, self.parent.output_dir
+                label_dir, filename = os.path.split(image_file)
+                if self.parent.output_dir:
+                    label_dir = self.parent.output_dir
+                label_file = os.path.join(
+                    label_dir, os.path.splitext(filename)[0] + ".json"
                 )
                 if not os.path.exists(label_file):
                     continue
-                data = LabelFile.read_document(label_file)
+                with open(label_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
                 src_shapes, dst_shapes = data["shapes"], []
                 for shape in src_shapes:
                     label = shape["label"]
@@ -1138,7 +1152,8 @@ class LabelModifyDialog(QtWidgets.QDialog):
                         shape["label"] = self.parent.label_info[label]["value"]
                     dst_shapes.append(shape)
                 data["shapes"] = dst_shapes
-                LabelFile.write_document(label_file, data)
+                with open(label_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
             logger.error(f"Error occurred while updating labels: {e}")
@@ -1148,12 +1163,16 @@ class LabelModifyDialog(QtWidgets.QDialog):
         classes = set()
 
         for image_file in self.image_file_list:
-            label_file = LabelFile.path_for_image(
-                image_file, self.parent.output_dir
+            label_dir, filename = os.path.split(image_file)
+            if self.parent.output_dir:
+                label_dir = self.parent.output_dir
+            label_file = os.path.join(
+                label_dir, os.path.splitext(filename)[0] + ".json"
             )
             if not os.path.exists(label_file):
                 continue
-            data = LabelFile.read_document(label_file)
+            with open(label_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
             shapes = data.get("shapes", [])
             for shape in shapes:
                 label = shape["label"]

@@ -8,27 +8,15 @@ from unittest import mock
 
 from PIL import Image
 
-from anylabeling.label_crypto import (
-    clear_key_cache,
-    configure_key_file,
-    decrypt_bytes,
-    generate_key_file,
-)
 from anylabeling.views.labeling import label_file
 
 
 class TestLabelFileSave(unittest.TestCase):
-    def setUp(self):
-        clear_key_cache()
-        self.addCleanup(clear_key_cache)
-
     def test_image_dimensions_are_read_without_pixel_conversion(self):
         image_buffer = io.BytesIO()
         Image.new("RGB", (2, 3), "white").save(image_buffer, format="PNG")
 
         with tempfile.TemporaryDirectory() as directory:
-            key = generate_key_file(os.path.join(directory, "project.key"))
-            configure_key_file(key.path)
             filename = os.path.join(directory, "annotation.json")
             label = label_file.LabelFile()
             with mock.patch.object(
@@ -45,14 +33,8 @@ class TestLabelFileSave(unittest.TestCase):
                     image_data=image_buffer.getvalue(),
                 )
 
-            encrypted = os.path.join(directory, "annotation.xalenc")
-            self.assertTrue(os.path.isfile(encrypted))
-            self.assertFalse(os.path.exists(filename))
-            data = json.loads(
-                decrypt_bytes(open(encrypted, "rb").read(), key).decode(
-                    "utf-8"
-                )
-            )
+            with open(filename, "r", encoding="utf-8") as label_stream:
+                data = json.load(label_stream)
             self.assertEqual(data["imageHeight"], 3)
             self.assertEqual(data["imageWidth"], 2)
             self.assertEqual(
@@ -61,18 +43,20 @@ class TestLabelFileSave(unittest.TestCase):
 
     def test_failed_save_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as directory:
-            key = generate_key_file(os.path.join(directory, "project.key"))
-            configure_key_file(key.path)
-            filename = os.path.join(directory, "annotation.xalenc")
-            original_data = b"original-envelope"
-            with open(filename, "wb") as handle:
-                handle.write(original_data)
+            filename = os.path.join(directory, "annotation.json")
+            original_data = '{"original": true}\n'
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(original_data)
+
+            def fail_after_partial_write(data, f, **kwargs):
+                f.write('{"partial":')
+                raise OSError("simulated write failure")
 
             label = label_file.LabelFile()
             with mock.patch.object(
-                label_file.os,
-                "replace",
-                side_effect=OSError("simulated write failure"),
+                label_file.json,
+                "dump",
+                side_effect=fail_after_partial_write,
             ):
                 with self.assertRaises(label_file.LabelFileError):
                     label.save(
@@ -83,19 +67,9 @@ class TestLabelFileSave(unittest.TestCase):
                         image_width=1,
                     )
 
-            with open(filename, "rb") as handle:
-                self.assertEqual(handle.read(), original_data)
-            leftovers = [
-                name
-                for name in os.listdir(directory)
-                if name
-                not in {
-                    "annotation.xalenc",
-                    "project.key",
-                    "project.key.meta.json",
-                }
-            ]
-            self.assertEqual(leftovers, [])
+            with open(filename, "r", encoding="utf-8") as f:
+                self.assertEqual(f.read(), original_data)
+            self.assertEqual(os.listdir(directory), ["annotation.json"])
             self.assertIsNone(label.filename)
 
 

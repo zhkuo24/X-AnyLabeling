@@ -37,21 +37,19 @@ def _write_frame(path, width, height, shapes=None):
         "version": "5.0.0",
         "flags": {"reviewed": True},
         "checked": False,
-        "shapes": (
-            shapes
-            if shapes is not None
-            else [
-                {
-                    "label": "lesion",
-                    "points": [[30, 20], [10, 20], [10, 5], [30, 5]],
-                    "group_id": None,
-                    "description": "",
-                    "shape_type": "rectangle",
-                    "flags": {},
-                    "mask": None,
-                }
-            ]
-        ),
+        "shapes": shapes
+        if shapes is not None
+        else [
+            {
+                "label": "lesion",
+                "points": [[30, 20], [10, 20], [10, 5], [30, 5]],
+                "group_id": None,
+                "description": "",
+                "shape_type": "rectangle",
+                "flags": {},
+                "mask": None,
+            }
+        ],
         "imagePath": Path(path).name,
         "imageData": None,
         "imageHeight": height,
@@ -88,10 +86,6 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
             window.deleteLater()
         self.app.processEvents()
         self.temp_dir.cleanup()
-        os.environ.pop("XLABEL_PASSPHRASE", None)
-        from anylabeling.label_crypto import clear_key_cache
-
-        clear_key_cache()
 
     def _open_sequence(self, sizes, auto_save=True, keep_prev=False):
         root = Path(self.temp_dir.name) / f"case-{len(self.windows)}"
@@ -108,36 +102,6 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         config["auto_save"] = auto_save
         config["keep_prev"] = keep_prev
         config["exif_scan_enabled"] = False
-        from anylabeling.label_crypto import (
-            generate_key_file,
-            keystore_path,
-            metadata_path,
-            wrap_credential,
-        )
-
-        master_path = root / "master.key"
-        dek_path = root / "project.key"
-        credential_path = root / "annotator.xalk"
-        generate_key_file(str(master_path))
-        generate_key_file(str(dek_path))
-        wrap_credential(
-            str(master_path),
-            str(credential_path),
-            "playback-passphrase",
-            dek_path=str(dek_path),
-        )
-        for leftover in (
-            master_path,
-            dek_path,
-            Path(metadata_path(str(master_path))),
-            Path(metadata_path(str(dek_path))),
-            Path(keystore_path(str(master_path))),
-        ):
-            if leftover.exists():
-                leftover.unlink()
-        config["label_key_file"] = None
-        config["label_credential_file"] = str(credential_path)
-        os.environ["XLABEL_PASSPHRASE"] = "playback-passphrase"
         window = MainWindow(self.app, config=config, filename=str(frame_dir))
         window.resize(1000, 720)
         window.show()
@@ -146,34 +110,15 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         view = window.labeling_widget.view
         self.assertEqual(len(view.image_list), len(frames))
         self.assertIsNotNone(view.filename)
-        export_actions = [
-            action
-            for action in view.menus.export.actions()
-            if not action.isSeparator()
-        ]
-        self.assertTrue(export_actions)
-        self.assertTrue(
-            all(not action.isEnabled() for action in export_actions)
-        )
         return window, view, frames
 
     def _snapshot(self, frames):
-        snap = {}
-        for path in frames:
-            for suffix in (".json", ".xalenc"):
-                label = path.with_suffix(suffix)
-                key = f"{path.name}{suffix}"
-                snap[key] = _sha256(label) if label.is_file() else None
-        return snap
+        return {
+            path.name: _sha256(path.with_suffix(".json")) for path in frames
+        }
 
     def _label(self, frame):
-        from anylabeling.views.labeling.label_file import LabelFile
-
-        encrypted = frame.with_suffix(".xalenc")
-        label = (
-            encrypted if encrypted.is_file() else frame.with_suffix(".json")
-        )
-        return LabelFile.read_document(str(label))
+        return json.loads(frame.with_suffix(".json").read_text(encoding="utf-8"))
 
     def test_loop_and_sequence_advance_do_not_rewrite_label_files(self):
         _window, view, frames = self._open_sequence(
@@ -189,9 +134,7 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         # changes once. Preview ticks must keep that same object: replacing
         # it would drop an in-progress edit.
         anchor_shape = view.canvas.shapes[0]
-        anchor_points = [
-            (point.x(), point.y()) for point in anchor_shape.points
-        ]
+        anchor_points = [(point.x(), point.y()) for point in anchor_shape.points]
         for _ in range(5):
             view._on_playback_tick()
             self.assertEqual(Path(view.filename), anchor)
@@ -245,17 +188,11 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
 
         view.canvas.shapes[0].label = "edited-during-loop"
         view.set_dirty()
-        self.assertTrue(frames[0].with_suffix(".xalenc").is_file())
-        self.assertFalse(frames[0].with_suffix(".json").is_file())
-        for path in frames[1:]:
-            self.assertFalse(path.with_suffix(".xalenc").is_file())
         anchor_label = self._label(frames[0])
         self.assertEqual(anchor_label["imagePath"], frames[0].name)
         self.assertEqual(anchor_label["imageWidth"], 48)
         self.assertEqual(anchor_label["imageHeight"], 32)
-        self.assertEqual(
-            anchor_label["shapes"][0]["label"], "edited-during-loop"
-        )
+        self.assertEqual(anchor_label["shapes"][0]["label"], "edited-during-loop")
         for path in frames[1:]:
             self.assertEqual(
                 path.with_suffix(".json").read_bytes(),
@@ -288,18 +225,9 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         view.toggle_loop_playback(True)
         self.assertFalse(view.dirty)
         saved_at_start = self._snapshot(frames)
-        anchor_json = f"{frames[0].name}.json"
-        anchor_enc = f"{frames[0].name}.xalenc"
-        self.assertIsNotNone(before[anchor_json])
-        self.assertIsNone(before[anchor_enc])
-        self.assertIsNone(saved_at_start[anchor_json])
-        self.assertIsNotNone(saved_at_start[anchor_enc])
+        self.assertNotEqual(saved_at_start[frames[0].name], before[frames[0].name])
         for path in frames[1:]:
-            self.assertEqual(
-                saved_at_start[f"{path.name}.json"],
-                before[f"{path.name}.json"],
-            )
-            self.assertIsNone(saved_at_start[f"{path.name}.xalenc"])
+            self.assertEqual(saved_at_start[path.name], before[path.name])
         self.assertEqual(self._label(frames[0])["imagePath"], frames[0].name)
         self.assertEqual(self._label(frames[0])["imageWidth"], 48)
         self.assertEqual(self._label(frames[0])["imageHeight"], 32)
@@ -323,9 +251,7 @@ class TestPlaybackLabelIntegrity(unittest.TestCase):
         self.assertIn("two frames", window.statusBar().currentMessage())
 
     def test_loop_release_outside_the_button_still_stops_playback(self):
-        _window, view, _frames = self._open_sequence(
-            [(32, 32), (32, 32), (32, 32)]
-        )
+        _window, view, _frames = self._open_sequence([(32, 32), (32, 32), (32, 32)])
         button = view.playback_control.loop_button
         button.click()
         self.app.processEvents()

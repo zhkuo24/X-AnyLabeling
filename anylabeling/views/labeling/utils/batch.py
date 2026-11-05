@@ -1,4 +1,5 @@
 import base64
+import json
 import os.path as osp
 from PIL import Image
 
@@ -25,6 +26,7 @@ from anylabeling.services.auto_labeling import (
 )
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
+from anylabeling.views.labeling.utils._io import io_open
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import get_msg_box_style
 from anylabeling.views.labeling.widgets.popup import Popup
@@ -152,14 +154,13 @@ def load_existing_shapes(image_file):
         list: A list of Shape objects loaded from the JSON file, or None if
               the file does not exist or contains no shapes.
     """
-    from anylabeling.views.labeling.label_file import LabelFile
-
-    label_file = LabelFile.path_for_image(image_file)
+    label_file = osp.splitext(image_file)[0] + ".json"
     if not osp.exists(label_file):
         return None
 
     try:
-        data = LabelFile.read_document(label_file)
+        with io_open(label_file, "r") as f:
+            data = json.load(f)
 
         shapes = data.get("shapes", [])
         if not shapes:
@@ -237,10 +238,10 @@ def _reset_auto_labeling_tracker(self):
 
 
 def save_auto_labeling_result(self, image_file, auto_labeling_result):
-    from anylabeling.views.labeling.label_file import LabelFile
-
     try:
-        label_file = LabelFile.path_for_image(image_file, self.output_dir)
+        label_file = osp.splitext(image_file)[0] + ".json"
+        if self.output_dir:
+            label_file = osp.join(self.output_dir, osp.basename(label_file))
 
         if auto_labeling_result is None:
             new_shapes = []
@@ -254,7 +255,8 @@ def save_auto_labeling_result(self, image_file, auto_labeling_result):
             replace = auto_labeling_result.replace
 
         if osp.exists(label_file):
-            data = LabelFile.read_document(label_file)
+            with io_open(label_file, "r") as f:
+                data = json.load(f)
 
             if replace:
                 data["shapes"] = new_shapes
@@ -287,7 +289,8 @@ def save_auto_labeling_result(self, image_file, auto_labeling_result):
                 "description": new_description,
             }
 
-        LabelFile.write_document(label_file, data)
+        with io_open(label_file, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     except Exception as e:
         logger.error(
