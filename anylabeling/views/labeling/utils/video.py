@@ -1,10 +1,12 @@
-import cv2
+import hashlib
+import json
 import os
 import os.path as osp
 import shutil
-import tempfile
-import time
 import subprocess
+import tempfile
+
+import cv2
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -24,6 +26,7 @@ from PyQt6.QtWidgets import (
 from anylabeling.views.labeling.chatbot.style import ChatbotDialogStyle
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.media import (
+    PRESERVED_SIDECAR_EXTENSIONS,
     install_extracted_directory,
 )
 from anylabeling.views.labeling.utils.qt import new_icon_path
@@ -145,13 +148,441 @@ class FrameExtractionDialog(QDialog):
         )
 
 
+# Written beside extracted frames. It is a sidecar, so a later install can
+# carry it forward, but it is not an annotation.
+FRAME_SOURCE_MANIFEST = ".xany-frame-source.json"
+_MANIFEST_VERSION = 1
+_OPENCV_SELECTION = "frame_index_mod_interval"
+_FFMPEG_SELECTION = "ffmpeg_fps_filter"
+_MANIFEST_IDENTITY_KEYS = (
+    "version",
+    "source_sha256",
+    "source_size",
+    "extractor",
+    "interval",
+    "prefix",
+    "seq_len",
+    "frame_selection",
+    "naming",
+)
+
+
+class ExtractionCancelled(Exception):
+    """The user cancelled frame extraction before it finished."""
+
+
+class VideoFrameIdentityError(Exception):
+    """Installing these frames would reuse annotations for other source frames."""
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _frame_filename(prefix, index, seq_len):
+    return f"{prefix}{str(index).zfill(int(seq_len))}.jpg"
+
+
+def _selection_for(extractor):
+    if extractor == "ffmpeg":
+        return _FFMPEG_SELECTION
+    if extractor == "opencv":
+        return _OPENCV_SELECTION
+    raise ValueError(f"Unknown frame extractor: {extractor}")
+
+
+def write_frame_source_manifest(
+    out_dir,
+    *,
+    source_path,
+    extractor,
+    interval,
+    prefix,
+    seq_len,
+    fps,
+):
+    """Record the source file and sampling rule that produced ``out_dir``."""
+
+    source_stat = os.stat(source_path)
+    manifest = {
+        "version": _MANIFEST_VERSION,
+        "source_sha256": _sha256(source_path),
+        "source_size": int(source_stat.st_size),
+        "extractor": extractor,
+        "interval": int(interval),
+        "prefix": prefix,
+        "seq_len": int(seq_len),
+        "fps": f"{float(fps):.6f}",
+        "frame_selection": _selection_for(extractor),
+        "naming": "output_index",
+    }
+    target = osp.join(out_dir, FRAME_SOURCE_MANIFEST)
+    temporary = target + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(
+            manifest,
+            handle,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        handle.write("\n")
+    os.replace(temporary, target)
+    return manifest
+
+
+def read_frame_source_manifest(directory):
+    """Return the sampling manifest, or None when it is missing or unreadable."""
+
+    path = osp.join(directory, FRAME_SOURCE_MANIFEST)
+    if not osp.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    return manifest
+
+
+def sampling_manifests_match(existing, extracted):
+    """True only when both manifests prove the same source frames."""
+
+    if not isinstance(existing, dict) or not isinstance(extracted, dict):
+        return False
+    for key in _MANIFEST_IDENTITY_KEYS:
+        if existing.get(key) != extracted.get(key):
+            return False
+    # OpenCV steps by decoded frame index. ffmpeg's fps filter also depends
+    # on the fps value that was baked into the command.
+    if existing.get("extractor") == "ffmpeg":
+        return existing.get("fps") == extracted.get("fps")
+    return True
+
+
+def _directory_has_user_sidecars(directory):
+    if not osp.isdir(directory):
+        return False
+    for root, _dirs, filenames in os.walk(directory):
+        for filename in filenames:
+            if filename == FRAME_SOURCE_MANIFEST:
+                continue
+            suffix = osp.splitext(filename)[1].lower()
+            if suffix in PRESERVED_SIDECAR_EXTENSIONS:
+                return True
+    return False
+
+
+def ensure_video_frame_identity(existing_dir, extracted_dir):
+    """Refuse to replace a directory whose annotations are not proven to match.
+
+    A directory with no annotation sidecars can still be replaced. DICOM
+    installs do not call this; their filenames already are source indexes.
+    """
+
+    if not osp.isdir(existing_dir) or osp.islink(existing_dir):
+        return
+    if not _directory_has_user_sidecars(existing_dir):
+        return
+    existing = read_frame_source_manifest(existing_dir)
+    extracted = read_frame_source_manifest(extracted_dir)
+    if sampling_manifests_match(existing, extracted):
+        return
+    raise VideoFrameIdentityError(
+        "The existing directory has annotations, but this extraction is "
+        "not proven to be the same source frames."
+    )
+
+
+def install_video_extraction(temporary_dir, output_dir):
+    """Install video frames, or leave ``output_dir`` untouched."""
+
+    ensure_video_frame_identity(output_dir, temporary_dir)
+    # The manifest ends in .json, so a generic sidecar copy would replace the
+    # new sampling record with the previous one.
+    install_extracted_directory(
+        temporary_dir,
+        output_dir,
+        skip_sidecar_names=(FRAME_SOURCE_MANIFEST,),
+    )
+
+
+def extract_sampled_frames(
+    source_path,
+    out_dir,
+    *,
+    extractor,
+    interval,
+    prefix,
+    seq_len,
+    fps,
+    video_path=None,
+    ffmpeg_path=None,
+    is_cancelled=None,
+    on_tick=None,
+    on_saved=None,
+):
+    """Extract frames with one sampler and record how they were chosen.
+
+    ``source_path`` is the file the user selected. ``video_path`` is the
+    readable copy when opening the original needed a temporary file.
+    """
+
+    interval = int(interval)
+    seq_len = int(seq_len)
+    if interval < 1:
+        raise ValueError("Frame interval must be at least 1.")
+    decode_path = video_path or source_path
+    os.makedirs(out_dir, exist_ok=True)
+
+    if extractor == "ffmpeg":
+        saved = _extract_with_ffmpeg(
+            decode_path,
+            out_dir,
+            ffmpeg_path=ffmpeg_path,
+            interval=interval,
+            prefix=prefix,
+            seq_len=seq_len,
+            fps=fps,
+            is_cancelled=is_cancelled,
+            on_tick=on_tick,
+        )
+    elif extractor == "opencv":
+        saved = _extract_with_opencv(
+            decode_path,
+            out_dir,
+            interval=interval,
+            prefix=prefix,
+            seq_len=seq_len,
+            is_cancelled=is_cancelled,
+            on_tick=on_tick,
+            on_saved=on_saved,
+        )
+    else:
+        raise ValueError(f"Unknown frame extractor: {extractor}")
+
+    if saved <= 0:
+        raise RuntimeError("Video extraction produced no readable frames.")
+    write_frame_source_manifest(
+        out_dir,
+        source_path=source_path,
+        extractor=extractor,
+        interval=interval,
+        prefix=prefix,
+        seq_len=seq_len,
+        fps=fps,
+    )
+    return saved
+
+
+def _extract_with_ffmpeg(
+    video_path,
+    out_dir,
+    *,
+    ffmpeg_path,
+    interval,
+    prefix,
+    seq_len,
+    fps,
+    is_cancelled,
+    on_tick,
+):
+    if not ffmpeg_path:
+        raise FileNotFoundError("ffmpeg not found.")
+    output_fps = fps / interval if interval > 0 else fps
+    output_pattern = osp.join(out_dir, f"{prefix}%0{seq_len}d.jpg")
+    command = [
+        ffmpeg_path,
+        "-i",
+        video_path,
+        "-vf",
+        f"fps={output_fps}",
+        "-qscale:v",
+        "2",
+        "-start_number",
+        "0",
+        output_pattern,
+    ]
+    logger.info(f"Running ffmpeg command: {' '.join(command)}")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        while process.poll() is None:
+            if on_tick is not None:
+                on_tick()
+            if is_cancelled is not None and is_cancelled():
+                _terminate_process(process)
+                raise ExtractionCancelled()
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg failed with exit code {process.returncode}"
+            )
+    except ExtractionCancelled:
+        raise
+    except Exception:
+        if process.poll() is None:
+            _terminate_process(process)
+        raise
+    return _count_extracted_jpgs(out_dir, prefix)
+
+
+def _extract_with_opencv(
+    video_path,
+    out_dir,
+    *,
+    interval,
+    prefix,
+    seq_len,
+    is_cancelled,
+    on_tick,
+    on_saved,
+):
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        capture.release()
+        raise RuntimeError(f"Failed to open video file: {video_path}")
+    frame_count = 0
+    saved = 0
+    try:
+        while True:
+            if on_tick is not None:
+                on_tick()
+            if is_cancelled is not None and is_cancelled():
+                raise ExtractionCancelled()
+            read_ok, frame = capture.read()
+            if not read_ok:
+                break
+            if frame_count % interval == 0:
+                frame_path = osp.join(
+                    out_dir, _frame_filename(prefix, saved, seq_len)
+                )
+                if not cv2.imwrite(frame_path, frame):
+                    raise OSError(f"Failed to write frame: {frame_path}")
+                saved += 1
+                if on_saved is not None:
+                    on_saved(saved)
+            frame_count += 1
+    finally:
+        capture.release()
+    return saved
+
+
+def _count_extracted_jpgs(out_dir, prefix):
+    return len(
+        [
+            name
+            for name in os.listdir(out_dir)
+            if name.startswith(prefix) and name.lower().endswith(".jpg")
+        ]
+    )
+
+
+def _terminate_process(process):
+    try:
+        process.terminate()
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+
+
+def _run_sampled_extraction(
+    self,
+    *,
+    source_path,
+    decode_path,
+    out_dir,
+    video_capture,
+    total_frames,
+    fps,
+    interval,
+    prefix,
+    seq_len,
+):
+    """Run ffmpeg or OpenCV into ``out_dir`` and record the sampling rule."""
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if video_capture is not None and video_capture.isOpened():
+        video_capture.release()
+    extractor = "ffmpeg" if ffmpeg_path else "opencv"
+    if extractor == "ffmpeg":
+        logger.info(f"Detected ffmpeg for extraction: {ffmpeg_path}")
+        progress_label = self.tr("Extracting frames using ffmpeg...")
+        progress_maximum = 0
+    else:
+        logger.info("ffmpeg not found. Using OpenCV for extraction.")
+        progress_label = self.tr(
+            "Extracting frames (OpenCV)... Please wait..."
+        )
+        progress_maximum = (
+            (total_frames + interval - 1) // interval
+            if total_frames > 0 and interval > 0
+            else 0
+        )
+
+    progress_dialog = QProgressDialog(
+        progress_label,
+        self.tr("Cancel"),
+        0,
+        progress_maximum,
+        self,
+    )
+    progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+    progress_dialog.setWindowTitle(self.tr("Progress"))
+    progress_dialog.setMinimumWidth(400)
+    progress_dialog.setMinimumHeight(150)
+    progress_dialog.setStyleSheet(
+        get_progress_dialog_style(color="#1d1d1f", height=20)
+    )
+    progress_dialog.setValue(0)
+    progress_dialog.show()
+    QApplication.processEvents()
+
+    def report_saved(count, dialog=progress_dialog):
+        dialog.setMaximum(max(dialog.maximum(), count))
+        dialog.setValue(count)
+
+    try:
+        extract_sampled_frames(
+            source_path,
+            out_dir,
+            extractor=extractor,
+            interval=interval,
+            prefix=prefix,
+            seq_len=seq_len,
+            fps=fps,
+            video_path=decode_path,
+            ffmpeg_path=ffmpeg_path,
+            is_cancelled=progress_dialog.wasCanceled,
+            on_tick=QApplication.processEvents,
+            on_saved=report_saved if extractor == "opencv" else None,
+        )
+    except ExtractionCancelled:
+        logger.info("Frame extraction cancelled.")
+        return None
+    finally:
+        if progress_dialog.isVisible():
+            progress_dialog.close()
+
+    effective_fps = fps / interval if interval > 0 else fps
+    return out_dir, effective_fps
+
+
 def extract_frames_from_video(self, input_file, out_dir):
     """Extract frames and return ``(output_dir, effective_fps)`` on success."""
 
     temp_video_path = None
     video_capture = None
     opened_successfully = False
-    ffmpeg_path = None
 
     try:
         input_file_str = str(input_file)
@@ -243,282 +674,22 @@ def extract_frames_from_video(self, input_file, out_dir):
             return None
         os.makedirs(out_dir, exist_ok=True)
 
-        # --- Check for ffmpeg ---
-        ffmpeg_path = shutil.which("ffmpeg")
-
         # Inner try: Handle the actual extraction (ffmpeg or OpenCV)
         try:
-            if ffmpeg_path:
-                logger.info(f"Detected ffmpeg for extraction: {ffmpeg_path}")
-                # --- FFMPEG Path ---
-                # VideoCapture is no longer needed once ffmpeg takes over
-                if video_capture and video_capture.isOpened():
-                    video_capture.release()
-
-                progress_dialog = QProgressDialog(
-                    self.tr("Extracting frames using ffmpeg..."),
-                    self.tr("Cancel"),
-                    0,
-                    0,
-                    self,  # Range (0,0) makes it indeterminate
-                )
-                progress_dialog.setWindowModality(
-                    Qt.WindowModality.WindowModal
-                )
-                progress_dialog.setWindowTitle(self.tr("Progress"))
-                progress_dialog.setMinimumWidth(400)
-                progress_dialog.setMinimumHeight(150)
-                progress_dialog.setStyleSheet(
-                    get_progress_dialog_style(color="#1d1d1f", height=20)
-                )
-                progress_dialog.show()
-                QApplication.processEvents()  # Ensure dialog is displayed
-
-                video_source_path = (
+            return _run_sampled_extraction(
+                self,
+                source_path=input_file_str,
+                decode_path=(
                     temp_video_path if temp_video_path else input_file_str
-                )
-                output_pattern = osp.join(out_dir, f"{prefix}%0{seq_len}d.jpg")
-                output_fps = (
-                    fps / interval if interval > 0 else fps
-                )  # Avoid division by zero
-
-                cmd = [
-                    ffmpeg_path,
-                    "-i",
-                    video_source_path,
-                    "-vf",
-                    f"fps={output_fps}",
-                    "-qscale:v",
-                    "2",  # High quality JPEG
-                    "-start_number",
-                    "0",
-                    output_pattern,
-                ]
-                logger.info(f"Running ffmpeg command: {' '.join(cmd)}")
-
-                ffmpeg_failed = False
-                try:
-                    # Using Popen for potential cancellation, though complex
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        text=True,
-                        encoding="utf-8",
-                    )
-                    while process.poll() is None:  # While process is running
-                        QApplication.processEvents()  # Keep UI responsive
-                        if progress_dialog.wasCanceled():
-                            logger.warning(
-                                "Cancellation requested for ffmpeg process."
-                            )
-                            try:
-                                process.terminate()  # Ask nicely first
-                                process.wait(timeout=2)  # Wait a bit
-                            except subprocess.TimeoutExpired:
-                                logger.warning(
-                                    "ffmpeg did not terminate gracefully, killing."
-                                )
-                                process.kill()  # Force kill
-                            logger.warning(
-                                "ffmpeg process terminated due to cancellation."
-                            )
-                            ffmpeg_failed = (
-                                True  # Treat cancellation as failure for now
-                            )
-                            break
-
-                    if not ffmpeg_failed:
-                        progress_dialog.setLabelText(
-                            self.tr("Verifying extracted frames...")
-                        )
-                        QApplication.processEvents()
-                        time.sleep(0.5)
-
-                        (
-                            stdout,
-                            stderr,
-                        ) = process.communicate()  # Get final output
-                        if process.returncode != 0:
-                            logger.error(
-                                f"ffmpeg failed with exit code {process.returncode}"
-                            )
-                            logger.error(f"ffmpeg stderr: {stderr}")
-                            logger.error(f"ffmpeg stdout: {stdout}")
-                            progress_dialog.setLabelText(
-                                self.tr("ffmpeg failed. Check logs.")
-                            )
-                            QApplication.processEvents()
-                            time.sleep(0.3)
-                            progress_dialog.close()
-                            popup = Popup(
-                                self.tr("ffmpeg failed. Check logs."),
-                                self,
-                                icon=new_icon_path("warning", "svg"),
-                            )
-                            popup.show_popup(self, position="center")
-                            ffmpeg_failed = True
-                        else:
-                            logger.info(
-                                "ffmpeg command completed successfully."
-                            )
-                            try:
-                                saved_frame_count = len(
-                                    [
-                                        name
-                                        for name in os.listdir(out_dir)
-                                        if name.startswith(prefix)
-                                        and name.endswith(".jpg")
-                                    ]
-                                )
-                                logger.info(
-                                    f"ffmpeg extracted approximately {saved_frame_count} frames to {out_dir}"
-                                )
-                                progress_dialog.setLabelText(
-                                    self.tr(
-                                        f"Completed! Extracted {saved_frame_count} frames."
-                                    )
-                                )
-                                QApplication.processEvents()
-                                time.sleep(0.3)
-                            except Exception as count_e:
-                                logger.warning(
-                                    f"Could not count extracted frames: {count_e}"
-                                )
-                                progress_dialog.setLabelText(
-                                    self.tr("Completed!")
-                                )
-                                QApplication.processEvents()
-                                time.sleep(0.3)
-
-                    if progress_dialog.isVisible():
-                        progress_dialog.close()
-
-                except FileNotFoundError:
-                    logger.error(
-                        f"ffmpeg command failed: {ffmpeg_path} not found or not executable."
-                    )
-                    if progress_dialog.isVisible():
-                        progress_dialog.close()
-                    popup = Popup(
-                        self.tr("ffmpeg not found."),
-                        self,
-                        icon=new_icon_path("error", "svg"),
-                    )
-                    popup.show_popup(self, position="center")
-                    ffmpeg_failed = True
-                except Exception as e:
-                    logger.exception(
-                        f"An error occurred while running ffmpeg: {e}"
-                    )
-                    if progress_dialog.isVisible():
-                        progress_dialog.close()
-                    popup = Popup(
-                        f"{self.tr('Error running ffmpeg')}: {e}",
-                        self,
-                        icon=new_icon_path("error", "svg"),
-                    )
-                    popup.show_popup(self, position="center")
-                    ffmpeg_failed = True
-
-                if ffmpeg_failed:
-                    return None  # Indicate failure if ffmpeg path failed
-
-            else:  # if not ffmpeg_path
-                logger.info("ffmpeg not found. Using OpenCV for extraction.")
-                # --- OpenCV Path ---
-                estimated_frames = (
-                    (total_frames + interval - 1) // interval
-                    if total_frames > 0 and interval > 0
-                    else 0
-                )
-                progress_dialog = QProgressDialog(
-                    self.tr("Extracting frames (OpenCV)... Please wait..."),
-                    self.tr("Cancel"),
-                    0,
-                    estimated_frames,
-                    self,
-                )
-                progress_dialog.setWindowModality(
-                    Qt.WindowModality.WindowModal
-                )
-                progress_dialog.setWindowTitle(self.tr("Progress"))
-                progress_dialog.setMinimumWidth(400)
-                progress_dialog.setMinimumHeight(150)
-                progress_dialog.setStyleSheet(
-                    get_progress_dialog_style(color="#1d1d1f", height=20)
-                )
-                progress_dialog.setValue(0)
-                progress_dialog.show()
-
-                frame_count = 0
-                saved_frame_count = 0
-                extraction_cancelled = False
-                while True:
-                    if progress_dialog.wasCanceled():
-                        logger.info(
-                            "Frame extraction cancelled by user (OpenCV)."
-                        )
-                        extraction_cancelled = True
-                        break
-
-                    if not video_capture.isOpened():
-                        logger.warning(
-                            "Video capture became unopened during OpenCV processing."
-                        )
-                        break
-
-                    ret, frame = video_capture.read()
-                    if not ret:
-                        break
-
-                    if frame_count % interval == 0:
-                        frame_filename = osp.join(
-                            out_dir,
-                            f"{prefix}{str(saved_frame_count).zfill(seq_len)}.jpg",
-                        )
-                        try:
-                            write_success = cv2.imwrite(frame_filename, frame)
-                            if not write_success:
-                                raise OSError(
-                                    f"Failed to write frame: {frame_filename}"
-                                )
-                        except Exception as e:
-                            logger.error(
-                                f"Error writing frame {frame_filename}: {e}"
-                            )
-                            progress_dialog.close()
-                            raise
-
-                        saved_frame_count += 1
-                        progress_dialog.setValue(saved_frame_count)
-
-                    frame_count += 1
-                    QApplication.processEvents()  # Keep UI responsive
-
-                progress_dialog.close()
-
-                if extraction_cancelled:
-                    logger.warning(
-                        f"Extraction cancelled. Frames saved so far (OpenCV): {saved_frame_count}"
-                    )
-                    return None
-                else:
-                    logger.info(
-                        f"OpenCV extraction finished. Saved frames: {saved_frame_count}"
-                    )
-
-            # --- Common success return (after ffmpeg or OpenCV) ---
-            extracted_frames = [
-                name
-                for name in os.listdir(out_dir)
-                if name.startswith(prefix) and name.lower().endswith(".jpg")
-            ]
-            if not extracted_frames:
-                logger.error("Video extraction produced no readable frames.")
-                return None
-            effective_fps = fps / interval if interval > 0 else fps
-            return out_dir, effective_fps
+                ),
+                out_dir=out_dir,
+                video_capture=video_capture,
+                total_frames=total_frames,
+                fps=fps,
+                interval=interval,
+                prefix=prefix,
+                seq_len=seq_len,
+            )
 
         # Except block for the *inner* try (extraction phase: ffmpeg or OpenCV)
         except Exception as extraction_e:
@@ -647,7 +818,27 @@ def open_video_file(self):
             raise RuntimeError(
                 "Video extraction returned an unexpected output directory."
             )
-        install_extracted_directory(temporary_dir, out_dir)
+        try:
+            install_video_extraction(temporary_dir, out_dir)
+        except VideoFrameIdentityError:
+            # Same output names can be different source frames after the
+            # interval or decoder changes. Leave the old directory in place.
+            logger.warning(
+                "Refusing to replace %s because frame identity is unproven",
+                out_dir,
+            )
+            QMessageBox.warning(
+                self,
+                self.tr("Annotations do not match these frames"),
+                self.tr(
+                    "The existing directory has annotations, but this "
+                    "extraction is not proven to be the same source frames. "
+                    "The original directory was left unchanged. Move or "
+                    "rename it before extracting with a different interval "
+                    "or decoder."
+                ),
+            )
+            return
         temporary_dir = None
         playback_fps_setter = getattr(self, "set_playback_fps", None)
         if callable(playback_fps_setter):
