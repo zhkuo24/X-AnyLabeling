@@ -3,17 +3,19 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _SETTINGS_ROOT = tempfile.mkdtemp(prefix="xany-loop-step-settings-")
 os.environ["XDG_CONFIG_HOME"] = _SETTINGS_ROOT
 
 try:
-    from PyQt6 import QtGui, QtWidgets
+    from PyQt6 import QtCore, QtGui, QtWidgets
 
     from anylabeling import config as anylabeling_config
     from anylabeling.config import get_config, set_work_directory
     from anylabeling.resources import resources  # noqa: F401
+    from anylabeling.views.labeling.shape import Shape
     from anylabeling.views.mainwindow import MainWindow
 
     PYQT_AVAILABLE = True
@@ -155,6 +157,14 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
 
     def _labels(self, view):
         return [item.shape().label for item in view.label_list]
+
+    def _open_drawing(self):
+        shape = Shape(shape_type="polygon", flags={})
+        shape.points = [
+            QtCore.QPointF(4, 4),
+            QtCore.QPointF(18, 10),
+        ]
+        return shape
 
     def _assert_stopped_on(self, view, frames, index):
         self.assertFalse(view.playback_timer.isActive())
@@ -350,4 +360,248 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
         self.app.processEvents()
         self._assert_stopped_on(view, frames, 10)
         self.assertEqual(self._labels(view), ["frame-10"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_keyboard_shortcuts_follow_the_preview_frame(self):
+        view, frames = self._open_sequence()
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+
+        view.actions.open_next_image.trigger()
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 16)
+        self.assertEqual(self._labels(view), ["frame-16"])
+        self.assertEqual(self._snapshot(frames), before)
+
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        view.actions.open_prev_image.trigger()
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 14)
+        self.assertEqual(self._labels(view), ["frame-14"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_keyboard_stays_on_the_preview_at_sequence_ends(self):
+        view, frames = self._open_sequence()
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 13)
+        self._start_loop(view, radius=3)
+        self._advance_loop_to(view, 16)
+
+        view.actions.open_next_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 16)
+        self.assertEqual(self._labels(view), ["frame-16"])
+
+        self._show_frame(view, frames, 3)
+        self._start_loop(view, radius=3)
+        self._advance_loop_to(view, 0)
+        view.actions.open_prev_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 0)
+        self.assertEqual(self._labels(view), ["frame-00"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_keyboard_saves_anchor_edit_on_the_preview_neighbor(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        view.canvas.shapes[0].label = "edited-anchor"
+        view.set_dirty()
+
+        view.actions.open_next_image.trigger()
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 16)
+        self.assertFalse(view.dirty)
+        self.assertEqual(self._labels(view), ["frame-16"])
+        anchor = json.loads(
+            frames[10].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(anchor["shapes"][0]["label"], "edited-anchor")
+        self.assertEqual(anchor["imagePath"], frames[10].name)
+        self.assertEqual(anchor["imageWidth"], 50)
+        target = json.loads(
+            frames[16].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(target["shapes"][0]["label"], "frame-16")
+        self.assertEqual(target["imagePath"], frames[16].name)
+        for path in frames:
+            if path == frames[10]:
+                continue
+            self.assertEqual(
+                self._snapshot(frames)[path.name], before[path.name]
+            )
+
+    def test_loop_seek_does_not_copy_anchor_shapes_onto_an_empty_frame(self):
+        view, frames = self._open_sequence(
+            auto_save=True, keep_prev=True, empty_indexes={7}
+        )
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        self.assertEqual(self._labels(view), ["frame-10"])
+
+        view._playback_seek(7)
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 7)
+        self.assertEqual(self._labels(view), [])
+        self.assertFalse(view.dirty)
+        target = json.loads(
+            frames[7].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(target["shapes"], [])
+        self.assertEqual(target["imagePath"], frames[7].name)
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_idle_keep_prev_still_copies_onto_an_empty_frame(self):
+        view, frames = self._open_sequence(
+            auto_save=True, keep_prev=True, empty_indexes={5, 6}
+        )
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 4)
+
+        view.actions.open_next_image.trigger()
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 5)
+        self.assertEqual(self._labels(view), ["frame-04"])
+        copied = json.loads(
+            frames[5].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(copied["shapes"][0]["label"], "frame-04")
+        self.assertEqual(copied["imagePath"], frames[5].name)
+        for path in frames:
+            if path == frames[5]:
+                continue
+            self.assertEqual(
+                self._snapshot(frames)[path.name], before[path.name]
+            )
+
+        self._show_frame(view, frames, 4)
+        view.playback_control.next_button.click()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 5)
+        self.assertEqual(self._labels(view), ["frame-04"])
+
+        self._show_frame(view, frames, 4)
+        view._playback_seek(6)
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 6)
+        self.assertEqual(self._labels(view), ["frame-04"])
+        sought = json.loads(
+            frames[6].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(sought["shapes"][0]["label"], "frame-04")
+        self.assertEqual(sought["imagePath"], frames[6].name)
+
+    def test_cancelled_navigation_keeps_the_shape_being_drawn(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 4)
+        drawing = self._open_drawing()
+        view.canvas.current = drawing
+        view.set_dirty()
+        self.assertTrue(view.dirty)
+
+        with mock.patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Cancel,
+        ) as question:
+            view.actions.open_next_image.trigger()
+            view.actions.open_prev_image.trigger()
+            view._playback_seek(9)
+            self.app.processEvents()
+
+        self.assertGreaterEqual(question.call_count, 3)
+        self.assertIs(view.canvas.current, drawing)
+        self.assertTrue(view.dirty)
+        self.assertEqual(Path(view.filename), frames[4])
+        self.assertEqual(self._labels(view), ["frame-04"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_cancelled_loop_navigation_keeps_the_drawing(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        drawing = self._open_drawing()
+        view.canvas.current = drawing
+        view.dirty = True
+
+        def refuse_save():
+            return False
+
+        view._save_current_loop_frame_edits = refuse_save
+        with mock.patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Cancel,
+        ) as question:
+            view.actions.open_next_image.trigger()
+            view._playback_seek(7)
+
+        self.assertGreaterEqual(question.call_count, 2)
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertTrue(view.playback_timer.isActive())
+        self.assertEqual(view._playback_display_index, 15)
+        self.assertEqual(view._playback_anchor_index, 10)
+        self.assertEqual(Path(view.filename), frames[10])
+        self.assertIs(view.canvas.current, drawing)
+        self.assertEqual(self._labels(view), ["frame-10"])
+        self.assertTrue(view.dirty)
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_open_loop_drawing_is_not_dropped_by_navigation(self):
+        view, frames = self._open_sequence()
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        drawing = self._open_drawing()
+        view.canvas.current = drawing
+        self.assertFalse(view.dirty)
+
+        view.actions.open_next_image.trigger()
+        view.playback_control.next_button.click()
+        view._playback_seek(7)
+
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertTrue(view.playback_timer.isActive())
+        self.assertEqual(view._playback_display_index, 15)
+        self.assertEqual(view._playback_anchor_index, 10)
+        self.assertEqual(Path(view.filename), frames[10])
+        self.assertIs(view.canvas.current, drawing)
+        self.assertEqual(self._labels(view), ["frame-10"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_sequence_keyboard_steps_from_the_open_frame(self):
+        view, frames = self._open_sequence()
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 0)
+        view.toggle_sequence_playback(True)
+        view._on_playback_tick()
+        view._on_playback_tick()
+        self.assertEqual(Path(view.filename), frames[2])
+
+        view.actions.open_next_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 3)
+        self.assertEqual(self._labels(view), ["frame-03"])
+
+        view.actions.open_prev_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 2)
+        self.assertEqual(self._labels(view), ["frame-02"])
         self.assertEqual(self._snapshot(frames), before)

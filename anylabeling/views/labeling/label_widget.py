@@ -7068,6 +7068,52 @@ class LabelingWidget(LabelDialog):
         finally:
             self._config["keep_prev"] = keep_previous
 
+    def _playback_navigation_blocked(self):
+        """Keep an in-progress loop drawing when navigation is refused.
+
+        Stopping a loop reloads the anchor and clears ``canvas.current``.
+        That reload has to wait until the user is actually leaving.
+        """
+
+        if self._playback_mode != self.PLAYBACK_LOOP:
+            return False
+        canvas = self.canvas
+        if canvas.current is None and not canvas.is_brush_mode:
+            return False
+        # The drawing is not in the anchor file yet. Ask before the reload
+        # that would drop it. Cancel leaves the loop and the shape alone.
+        if self.dirty and not self._confirm_playback_frame_change():
+            self._sync_playback_control()
+            return True
+        if canvas.current is not None or canvas.is_brush_mode:
+            self.status(
+                self.tr(
+                    "Finish the current annotation before changing frames"
+                ),
+                3000,
+            )
+            self._sync_playback_control()
+            return True
+        return False
+
+    def _accept_playback_navigation(self):
+        """Persist a loop's committed edits, then honor Cancel.
+
+        Returns False when the open document, including a shape still
+        being drawn, must stay where it is.
+        """
+
+        if self._playback_navigation_blocked():
+            return False
+        if self._playback_mode == self.PLAYBACK_LOOP and self.dirty:
+            # Same anchor write the stop path uses. Doing it first lets a
+            # later Cancel happen before the anchor reload.
+            self._save_current_loop_frame_edits()
+        if not self._confirm_playback_frame_change():
+            self._sync_playback_control()
+            return False
+        return True
+
     def _playback_step(self, offset):
         # Loop preview does not change ``filename``. Stopping restores the
         # anchor document, so the baseline has to be the frame on screen
@@ -7077,11 +7123,11 @@ class LabelingWidget(LabelDialog):
         displayed_index = (
             self._playback_display_index if stepping_from_loop else None
         )
-        if self._playback_mode is not None:
-            self._stop_playback()
-        if not self.image_list or not self._confirm_playback_frame_change():
+        if not self.image_list or not self._accept_playback_navigation():
             self._sync_playback_control()
             return
+        if self._playback_mode is not None:
+            self._stop_playback()
         if isinstance(displayed_index, int):
             current_index = displayed_index
         else:
@@ -7105,17 +7151,23 @@ class LabelingWidget(LabelDialog):
             self._sync_playback_control(open_index)
 
     def _playback_seek(self, frame_index):
-        if self._playback_mode is not None:
-            self._stop_playback()
-        if not self.image_list or not self._confirm_playback_frame_change():
+        seeking_from_loop = self._playback_mode == self.PLAYBACK_LOOP
+        if not self.image_list or not self._accept_playback_navigation():
             self._sync_playback_control()
             return
+        if self._playback_mode is not None:
+            self._stop_playback()
         frame_index = min(max(0, int(frame_index)), len(self.image_list) - 1)
         current_index = self.fn_to_index.get(
             str(self.filename), self.file_list_widget.currentRow()
         )
         if frame_index != current_index:
-            self._load_playback_frame(frame_index)
+            # Leaving a loop puts the anchor shapes back on the canvas.
+            # ``keep_prev`` would write them into an empty target. Idle
+            # seeks keep the configured ``keep_prev`` behavior.
+            self._load_playback_frame(
+                frame_index, for_sequence=seeking_from_loop
+            )
         else:
             self._sync_playback_control(current_index)
 
@@ -7190,8 +7242,15 @@ class LabelingWidget(LabelDialog):
                 break
 
     def open_prev_image(self, _value=False):
-        if self._playback_mode is not None:
-            self._stop_playback()
+        # Keyboard prev/next share the playback-bar baseline. Stopping
+        # first would put ``filename`` back on the loop anchor and then
+        # step away from that anchor instead of the preview.
+        if (
+            self._playback_mode is not None
+            and not self._playback_internal_change
+        ):
+            self._playback_step(-1)
+            return
         if not self.may_continue():
             return
         if self.file_list_widget.count() <= 0:
@@ -7209,7 +7268,8 @@ class LabelingWidget(LabelDialog):
             self._playback_mode is not None
             and not self._playback_internal_change
         ):
-            self._stop_playback()
+            self._playback_step(1)
+            return
         if not self.may_continue():
             return
         count = self.file_list_widget.count()
