@@ -342,6 +342,60 @@ class TestDicomFileHandling(unittest.TestCase):
             self.assertEqual(len(result.frame_paths), 1)
             self.assertTrue(os.path.isfile(result.frame_paths[0]))
 
+    def test_reextract_keeps_json_beside_the_same_source_index(self):
+        pixels = np.array(
+            [
+                [[0, 255], [0, 0]],
+                [[0, 0], [255, 0]],
+            ],
+            dtype=np.uint16,
+        )
+        dataset = make_image_dataset(pixels, frame_count=2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir, "study_frames")
+            extract_dataset_frames_to_png(dataset, output_dir)
+            (output_dir / "frame_000000.json").write_text(
+                '{"label":"first"}', encoding="utf-8"
+            )
+            (output_dir / "frame_000001.json").write_text(
+                '{"label":"second"}', encoding="utf-8"
+            )
+            extracted_dir = Path(temp_dir, "again")
+            extract_dataset_frames_to_png(dataset, extracted_dir)
+            extracted_frames = {
+                path.name: path.read_bytes()
+                for path in extracted_dir.glob("*.png")
+            }
+            self.assertNotEqual(
+                extracted_frames["frame_000000.png"],
+                extracted_frames["frame_000001.png"],
+            )
+
+            install_extracted_directory(str(extracted_dir), str(output_dir))
+
+            self.assertEqual(
+                (output_dir / "frame_000000.json").read_text(encoding="utf-8"),
+                '{"label":"first"}',
+            )
+            self.assertEqual(
+                (output_dir / "frame_000001.json").read_text(encoding="utf-8"),
+                '{"label":"second"}',
+            )
+            for name, payload in extracted_frames.items():
+                self.assertEqual((output_dir / name).read_bytes(), payload)
+            with Image.open(output_dir / "frame_000000.png") as image:
+                np.testing.assert_array_equal(
+                    np.asarray(image),
+                    np.array([[0, 255], [0, 0]], dtype=np.uint8),
+                )
+            with Image.open(output_dir / "frame_000001.png") as image:
+                np.testing.assert_array_equal(
+                    np.asarray(image),
+                    np.array([[0, 0], [255, 0]], dtype=np.uint8),
+                )
+            self.assertFalse(extracted_dir.exists())
+
     def test_output_directory_is_a_sibling(self):
         self.assertEqual(
             get_output_directory(Path(os.sep) / "data" / "study.dcm"),
