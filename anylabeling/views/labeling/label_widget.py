@@ -6776,6 +6776,18 @@ class LabelingWidget(LabelDialog):
         if not self._playback_available():
             self._sync_playback_control()
             return
+        # Starting a loop reloads the anchor from disk. An open shape or
+        # brush edit exists only on the canvas, so that reload would
+        # discard it. Sequence playback already refuses this state.
+        if self.canvas.current is not None or self.canvas.is_brush_mode:
+            self.status(
+                self.tr(
+                    "Finish the current annotation before loop playback"
+                ),
+                3000,
+            )
+            self._sync_playback_control()
+            return
 
         anchor_index = self.fn_to_index.get(str(self.filename))
         if anchor_index is None:
@@ -6847,6 +6859,34 @@ class LabelingWidget(LabelDialog):
             )
         )
 
+    def _loop_has_uncommitted_geometry(self):
+        """Return True when the canvas holds geometry the anchor file lacks.
+
+        Finishing a shape appends it before the label dialog returns, and
+        an in-progress polygon or brush edit lives only in ``canvas.current``
+        or brush state. Reloading the anchor from disk at that moment drops
+        the new geometry and lets the dialog label whatever shape was just
+        loaded instead.
+        """
+
+        canvas = self.canvas
+        if canvas.current is not None or canvas.is_brush_mode:
+            return True
+        listed_shapes = {item.shape() for item in self.label_list}
+        return any(shape not in listed_shapes for shape in canvas.shapes)
+
+    def _restore_loop_anchor_pixmap(self):
+        """Show the anchor image again without replacing canvas shapes."""
+
+        image = self.image
+        if image is None or image.isNull():
+            return
+        # Preview frames change only the canvas pixmap. ``self.image`` is
+        # still the anchor, so this puts that frame back under the shapes
+        # the label dialog is editing.
+        self.canvas.set_preview_pixmap(QtGui.QPixmap.fromImage(image))
+        self.canvas.adjustSize()
+
     def _stop_playback(self, restore_anchor=True):
         # ``save_labels`` may already be inside its error dialog. Stopping
         # from that nested tick would save again and then reload the frame
@@ -6872,17 +6912,12 @@ class LabelingWidget(LabelDialog):
                 and anchor_index is not None
                 and 0 <= anchor_index < len(self.image_list)
             ):
-                # A failed save must keep the in-memory shapes. Reloading
-                # the anchor here would replace them with the old JSON.
-                # The preview pixmap is still put back so those shapes sit
-                # on the anchor image. A successful save reloads from disk.
-                if save_failed:
-                    image = self.image
-                    if image is not None and not image.isNull():
-                        self.canvas.set_preview_pixmap(
-                            QtGui.QPixmap.fromImage(image)
-                        )
-                        self.canvas.adjustSize()
+                # Uncommitted geometry and a failed save both exist only in
+                # memory. Reloading the anchor from disk would drop them.
+                # Put the anchor image back under the shapes already on the
+                # canvas. A clean stop still reloads from disk.
+                if self._loop_has_uncommitted_geometry() or save_failed:
+                    self._restore_loop_anchor_pixmap()
                 else:
                     # Return to the anchor frame with the latest saved data
                     # instead of a cached preview pixmap (2.5.3 behavior).
