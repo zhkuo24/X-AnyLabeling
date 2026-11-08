@@ -6616,33 +6616,48 @@ class LabelingWidget(LabelDialog):
         if hasattr(self, "playback_control"):
             self.playback_control.set_fps(self._playback_fps)
 
+    def _loop_frame_after_radius_change(self, start, end):
+        """Keep the preview frame, or the anchor when it no longer fits."""
+
+        displayed = self._playback_display_index
+        if isinstance(displayed, int) and start <= displayed <= end:
+            return displayed
+        return self._playback_anchor_index
+
     def _set_playback_loop_radius(self, radius):
         self._playback_loop_radius = max(0, int(radius))
         if self._playback_mode != self.PLAYBACK_LOOP:
             return
+        anchor = self._playback_anchor_index
+        if anchor is None or not self.image_list:
+            return
         start, end = symmetric_loop_bounds(
-            self._playback_anchor_index,
+            anchor,
             len(self.image_list),
             self._playback_loop_radius,
         )
+        if end < start:
+            return
+        # The stored slot belongs to the previous window. Reusing it as a
+        # position in the new window jumps the preview to a different frame.
         self._playback_loop_indices = list(range(start, end + 1))
-        if (
-            self._playback_loop_current_index is not None
-            and 0 <= self._playback_loop_current_index
-            < len(self._playback_loop_indices)
-        ):
-            current = self._playback_loop_indices[
-                self._playback_loop_current_index
-            ]
-            if not start <= current <= end:
-                self._playback_loop_current_index = (
-                    self._playback_loop_indices.index(
-                        self._playback_anchor_index
-                    )
-                )
-                self._load_image_only_for_loop(self._playback_anchor_index)
-                self._playback_display_index = self._playback_anchor_index
-                self._sync_playback_control(self._playback_anchor_index)
+        target = self._loop_frame_after_radius_change(start, end)
+        if target not in self._playback_loop_indices:
+            target = anchor
+        self._playback_loop_current_index = (
+            self._playback_loop_indices.index(target)
+        )
+        if target != self._playback_display_index:
+            self._playback_internal_change = True
+            try:
+                loaded = self._load_image_only_for_loop(target)
+            finally:
+                self._playback_internal_change = False
+            if not loaded:
+                self._stop_playback()
+                return
+        self._playback_display_index = target
+        self._sync_playback_control(target)
 
     def _confirm_playback_frame_change(self):
         if not self.dirty:
