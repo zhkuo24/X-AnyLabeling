@@ -435,16 +435,31 @@ class TestSaveFailureDirty(unittest.TestCase):
             questions.append("asked")
             return QtWidgets.QMessageBox.StandardButton.Cancel
 
+        # Next asks before it stops. Cancel leaves the loop running and
+        # does not write. The in-memory shape has to survive that.
         calls_before = self._save_calls
+        preview = view._playback_display_index
         with patch.object(
             QtWidgets.QMessageBox, "question", side_effect=cancel_question
         ):
-            self._run_while_closing_save_errors(
-                view, view.open_next_image, require_modal_tick=True
-            )
-
-        self.assertEqual(self._save_calls, calls_before + 1)
+            view.open_next_image()
         self.assertEqual(questions, ["asked"])
+        self.assertEqual(self._save_calls, calls_before)
+        self.assertTrue(view.playback_timer.isActive())
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertEqual(view._playback_display_index, preview)
+        self.assertIs(view.canvas.shapes[-1], shape)
+        self.assertTrue(view.dirty)
+
+        # An explicit stop still tries to save. The locked directory fails
+        # that write, and the shapes stay in memory instead of being reloaded.
+        calls_before = self._save_calls
+        self._run_while_closing_save_errors(
+            view,
+            lambda: view.toggle_loop_playback(False),
+            require_modal_tick=True,
+        )
+        self.assertEqual(self._save_calls, calls_before + 1)
         self.assertFalse(view.playback_timer.isActive())
         self.assertIsNone(view._playback_mode)
         self.assertTrue(view.dirty)
