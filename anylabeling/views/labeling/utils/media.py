@@ -30,11 +30,14 @@ def _suffix(path) -> str:
     return Path(os.fspath(path)).suffix.lower()
 
 
-def _copy_preserved_sidecars(source_dir: str, destination_dir: str) -> None:
+def _copy_preserved_sidecars(
+    source_dir: str, destination_dir: str, skip_names=()
+) -> None:
     """Carry annotation sidecars into a freshly extracted frame directory."""
 
     if not osp.isdir(source_dir):
         return
+    skipped = set(skip_names)
 
     for root, _dirs, filenames in os.walk(source_dir):
         relative_root = osp.relpath(root, source_dir)
@@ -44,6 +47,8 @@ def _copy_preserved_sidecars(source_dir: str, destination_dir: str) -> None:
             else osp.join(destination_dir, relative_root)
         )
         for filename in filenames:
+            if filename in skipped:
+                continue
             if _suffix(filename) not in PRESERVED_SIDECAR_EXTENSIONS:
                 continue
             os.makedirs(destination_root, exist_ok=True)
@@ -53,8 +58,16 @@ def _copy_preserved_sidecars(source_dir: str, destination_dir: str) -> None:
             )
 
 
-def install_extracted_directory(temporary_dir: str, output_dir: str) -> None:
-    """Atomically install new frames while preserving existing annotations."""
+def install_extracted_directory(
+    temporary_dir: str, output_dir: str, *, skip_sidecar_names=()
+) -> None:
+    """Atomically install new frames while preserving existing annotations.
+
+    ``skip_sidecar_names`` keeps named files in ``temporary_dir``. Video
+    installs use it so a fresh sampling manifest is not replaced by the
+    previous one. The default keeps every preserved sidecar, including the
+    DICOM path.
+    """
 
     if not osp.lexists(output_dir):
         os.replace(temporary_dir, output_dir)
@@ -64,7 +77,9 @@ def install_extracted_directory(temporary_dir: str, output_dir: str) -> None:
             f"Frame output path exists but is not a directory: {output_dir}"
         )
 
-    _copy_preserved_sidecars(output_dir, temporary_dir)
+    _copy_preserved_sidecars(
+        output_dir, temporary_dir, skip_names=skip_sidecar_names
+    )
     output_parent = osp.dirname(output_dir) or "."
     backup_root = tempfile.mkdtemp(
         prefix=f".{osp.basename(output_dir)}-backup-",
