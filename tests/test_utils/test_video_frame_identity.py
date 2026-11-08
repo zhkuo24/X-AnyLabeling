@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 from anylabeling.views.labeling.utils import video as video_module
 from anylabeling.views.labeling.utils.video import (
     FRAME_SOURCE_MANIFEST,
+    LEGACY_FRAME_SOURCE_MANIFEST,
     ExtractionCancelled,
     VideoFrameIdentityError,
     extract_sampled_frames,
@@ -299,6 +300,49 @@ class TestVideoFrameIdentity(unittest.TestCase):
         self._extract(resampled, extractor="opencv", interval=3)
         install_video_extraction(str(resampled), str(output))
 
+        self.assertEqual(
+            read_frame_source_manifest(str(output))["interval"], 3
+        )
+        self.assertTrue(
+            _close_to(_mean_bgr(output / "frame_00001.jpg"), COLORS[3])
+        )
+
+    def test_legacy_json_manifest_proves_identity_and_is_not_copied(self):
+        output = self.root / "frames"
+        self._extract(output, extractor="opencv", interval=1)
+        legacy = output / LEGACY_FRAME_SOURCE_MANIFEST
+        (output / FRAME_SOURCE_MANIFEST).replace(legacy)
+        marker = '{"shapes":[{"label":"same-source"}]}'
+        (output / "frame_00001.json").write_text(marker, encoding="utf-8")
+
+        again = self.root / "again"
+        self._extract(again, extractor="opencv", interval=1)
+        install_video_extraction(str(again), str(output))
+
+        self.assertEqual(
+            (output / "frame_00001.json").read_text(encoding="utf-8"), marker
+        )
+        self.assertTrue((output / FRAME_SOURCE_MANIFEST).is_file())
+        self.assertFalse((output / LEGACY_FRAME_SOURCE_MANIFEST).exists())
+        self.assertEqual(
+            read_frame_source_manifest(str(output))["interval"], 1
+        )
+        self.assertTrue(
+            _close_to(_mean_bgr(output / "frame_00001.jpg"), COLORS[1])
+        )
+
+    def test_legacy_manifest_alone_does_not_block_resampling(self):
+        output = self.root / "frames"
+        self._extract(output, extractor="opencv", interval=1)
+        (output / FRAME_SOURCE_MANIFEST).replace(
+            output / LEGACY_FRAME_SOURCE_MANIFEST
+        )
+
+        resampled = self.root / "interval-3"
+        self._extract(resampled, extractor="opencv", interval=3)
+        install_video_extraction(str(resampled), str(output))
+
+        self.assertFalse((output / LEGACY_FRAME_SOURCE_MANIFEST).exists())
         self.assertEqual(
             read_frame_source_manifest(str(output))["interval"], 3
         )

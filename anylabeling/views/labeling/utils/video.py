@@ -148,9 +148,18 @@ class FrameExtractionDialog(QDialog):
         )
 
 
-# Written beside extracted frames. It is a sidecar, so a later install can
-# carry it forward, but it is not an annotation.
-FRAME_SOURCE_MANIFEST = ".xany-frame-source.json"
+# Written beside extracted frames. The record is JSON text, but the name
+# is not a *.json annotation: os.listdir exporters and shape conversion
+# load every file ending in ".json", and this record has no shapes or
+# imagePath. The first revision of this feature used the hidden .json
+# name below. Readers still accept that file so a same-source re-import
+# can prove identity, and install does not copy it into the new directory.
+FRAME_SOURCE_MANIFEST = ".xany-frame-source"
+LEGACY_FRAME_SOURCE_MANIFEST = ".xany-frame-source.json"
+_MANIFEST_FILENAMES = (
+    FRAME_SOURCE_MANIFEST,
+    LEGACY_FRAME_SOURCE_MANIFEST,
+)
 _MANIFEST_VERSION = 1
 _OPENCV_SELECTION = "frame_index_mod_interval"
 _FFMPEG_SELECTION = "ffmpeg_fps_filter"
@@ -235,11 +244,21 @@ def write_frame_source_manifest(
     return manifest
 
 
+def _frame_source_manifest_path(directory):
+    current = osp.join(directory, FRAME_SOURCE_MANIFEST)
+    if osp.isfile(current):
+        return current
+    legacy = osp.join(directory, LEGACY_FRAME_SOURCE_MANIFEST)
+    if osp.isfile(legacy):
+        return legacy
+    return None
+
+
 def read_frame_source_manifest(directory):
     """Return the sampling manifest, or None when it is missing or unreadable."""
 
-    path = osp.join(directory, FRAME_SOURCE_MANIFEST)
-    if not osp.isfile(path):
+    path = _frame_source_manifest_path(directory)
+    if path is None:
         return None
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -271,7 +290,7 @@ def _directory_has_user_sidecars(directory):
         return False
     for root, _dirs, filenames in os.walk(directory):
         for filename in filenames:
-            if filename == FRAME_SOURCE_MANIFEST:
+            if filename in _MANIFEST_FILENAMES:
                 continue
             suffix = osp.splitext(filename)[1].lower()
             if suffix in PRESERVED_SIDECAR_EXTENSIONS:
@@ -304,12 +323,13 @@ def install_video_extraction(temporary_dir, output_dir):
     """Install video frames, or leave ``output_dir`` untouched."""
 
     ensure_video_frame_identity(output_dir, temporary_dir)
-    # The manifest ends in .json, so a generic sidecar copy would replace the
-    # new sampling record with the previous one.
+    # Skip both names. The current record is not a preserved sidecar
+    # extension. The legacy .json name would otherwise be copied forward,
+    # replace nothing useful, and still be scanned as a label file.
     install_extracted_directory(
         temporary_dir,
         output_dir,
-        skip_sidecar_names=(FRAME_SOURCE_MANIFEST,),
+        skip_sidecar_names=_MANIFEST_FILENAMES,
     )
 
 
