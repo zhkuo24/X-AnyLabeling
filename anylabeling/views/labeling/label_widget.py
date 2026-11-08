@@ -7069,21 +7069,40 @@ class LabelingWidget(LabelDialog):
             self._config["keep_prev"] = keep_previous
 
     def _playback_step(self, offset):
+        # Loop preview does not change ``filename``. Stopping restores the
+        # anchor document, so the baseline has to be the frame on screen
+        # before that restore. Sequence playback and an idle document
+        # already keep ``filename`` on the frame being shown.
+        stepping_from_loop = self._playback_mode == self.PLAYBACK_LOOP
+        displayed_index = (
+            self._playback_display_index if stepping_from_loop else None
+        )
         if self._playback_mode is not None:
             self._stop_playback()
         if not self.image_list or not self._confirm_playback_frame_change():
             self._sync_playback_control()
             return
-        current_index = self.fn_to_index.get(
-            str(self.filename), self.file_list_widget.currentRow()
-        )
+        if isinstance(displayed_index, int):
+            current_index = displayed_index
+        else:
+            current_index = self.fn_to_index.get(
+                str(self.filename), self.file_list_widget.currentRow()
+            )
         target_index = min(
             max(0, current_index + int(offset)), len(self.image_list) - 1
         )
-        if target_index != current_index:
-            self._load_playback_frame(target_index)
+        open_index = self.fn_to_index.get(
+            str(self.filename), self.file_list_widget.currentRow()
+        )
+        if target_index != open_index:
+            # The anchor shapes are on the canvas after a loop stops.
+            # ``keep_prev`` would copy them onto an empty destination and
+            # autosave that file. Sequence loads already suppress this.
+            self._load_playback_frame(
+                target_index, for_sequence=stepping_from_loop
+            )
         else:
-            self._sync_playback_control(current_index)
+            self._sync_playback_control(open_index)
 
     def _playback_seek(self, frame_index):
         if self._playback_mode is not None:
