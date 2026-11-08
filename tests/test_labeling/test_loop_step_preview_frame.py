@@ -1,7 +1,9 @@
 import json
 import os
 import tempfile
+import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -166,6 +168,53 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
         ]
         return shape
 
+    def _mark_checked(self, view, indexes):
+        for index in indexes:
+            item = view.file_list_widget.item(index)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, True)
+
+    @contextmanager
+    def _answer_modal(self, button, delay_ms=100):
+        """Click a real QMessageBox after ``delay_ms`` inside its event loop."""
+
+        state = {"seen": 0, "clicked": 0, "since": None}
+        timer = QtCore.QTimer()
+        timer.setInterval(20)
+        safety = QtCore.QTimer()
+        safety.setSingleShot(True)
+
+        def poll():
+            box = QtWidgets.QApplication.activeModalWidget()
+            if not isinstance(box, QtWidgets.QMessageBox):
+                state["since"] = None
+                return
+            now = time.monotonic()
+            if state["since"] is None:
+                state["since"] = now
+                state["seen"] += 1
+            if (now - state["since"]) * 1000 < delay_ms:
+                return
+            widget = box.button(button)
+            if widget is not None:
+                state["clicked"] += 1
+                state["since"] = None
+                widget.click()
+
+        def abort():
+            box = QtWidgets.QApplication.activeModalWidget()
+            if isinstance(box, QtWidgets.QMessageBox):
+                box.reject()
+
+        timer.timeout.connect(poll)
+        safety.timeout.connect(abort)
+        timer.start()
+        safety.start(2000)
+        try:
+            yield state
+        finally:
+            timer.stop()
+            safety.stop()
+
     def _assert_stopped_on(self, view, frames, index):
         self.assertFalse(view.playback_timer.isActive())
         self.assertIsNone(view._playback_mode)
@@ -254,7 +303,10 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
         self.assertTrue(view.dirty)
         self.assertEqual(self._snapshot(frames), before)
 
-        view.playback_control.next_button.click()
+        save = QtWidgets.QMessageBox.StandardButton.Save
+        with self._answer_modal(save, delay_ms=80) as state:
+            view.playback_control.next_button.click()
+        self.assertEqual(state["clicked"], 1)
         self.app.processEvents()
 
         self._assert_stopped_on(view, frames, 16)
@@ -416,7 +468,10 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
         view.canvas.shapes[0].label = "edited-anchor"
         view.set_dirty()
 
-        view.actions.open_next_image.trigger()
+        save = QtWidgets.QMessageBox.StandardButton.Save
+        with self._answer_modal(save, delay_ms=80) as state:
+            view.actions.open_next_image.trigger()
+        self.assertEqual(state["clicked"], 1)
         self.app.processEvents()
 
         self._assert_stopped_on(view, frames, 16)
@@ -540,10 +595,6 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
         view.canvas.current = drawing
         view.dirty = True
 
-        def refuse_save():
-            return False
-
-        view._save_current_loop_frame_edits = refuse_save
         with mock.patch.object(
             QtWidgets.QMessageBox,
             "question",
@@ -552,7 +603,7 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
             view.actions.open_next_image.trigger()
             view._playback_seek(7)
 
-        self.assertGreaterEqual(question.call_count, 2)
+        self.assertEqual(question.call_count, 0)
         self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
         self.assertTrue(view.playback_timer.isActive())
         self.assertEqual(view._playback_display_index, 15)
@@ -604,4 +655,209 @@ class TestLoopStepPreviewFrame(unittest.TestCase):
         self.app.processEvents()
         self._assert_stopped_on(view, frames, 2)
         self.assertEqual(self._labels(view), ["frame-02"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_real_timer_keeps_a_dirty_drawing_without_a_dialog(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        drawing = self._open_drawing()
+        view.canvas.current = drawing
+        view.dirty = True
+        cancel = QtWidgets.QMessageBox.StandardButton.Cancel
+
+        with self._answer_modal(cancel, delay_ms=100) as state:
+            view.actions.open_next_image.trigger()
+            view.actions.open_prev_image.trigger()
+            view.playback_control.next_button.click()
+            view.playback_control.prev_button.click()
+            view.playback_control.seek_requested.emit(7)
+
+        self.assertEqual(state["seen"], 0)
+        self.assertEqual(state["clicked"], 0)
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertTrue(view.playback_timer.isActive())
+        self.assertEqual(view._playback_anchor_index, 10)
+        self.assertEqual(Path(view.filename), frames[10])
+        self.assertIs(view.canvas.current, drawing)
+        self.assertEqual(self._labels(view), ["frame-10"])
+        self.assertTrue(view.dirty)
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_real_timer_keeps_a_dirty_brush_without_a_dialog(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        view.canvas.is_brush_mode = True
+        view.dirty = True
+        cancel = QtWidgets.QMessageBox.StandardButton.Cancel
+
+        with self._answer_modal(cancel, delay_ms=100) as state:
+            view.actions.open_next_image.trigger()
+            view.playback_control.next_button.click()
+            view.playback_control.seek_requested.emit(7)
+
+        self.assertEqual(state["seen"], 0)
+        self.assertTrue(view.canvas.is_brush_mode)
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertTrue(view.playback_timer.isActive())
+        self.assertIn(view._playback_display_index, range(5, 16))
+        self.assertEqual(Path(view.filename), frames[10])
+        self.assertTrue(view.dirty)
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_real_save_dialog_cancel_keeps_dirty_loop_edits(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        view.canvas.shapes[0].label = "edited-anchor"
+        view.set_dirty()
+        ticks = {"count": 0}
+        view.playback_timer.timeout.connect(lambda: ticks.__setitem__(
+            "count", ticks["count"] + 1
+        ))
+        cancel = QtWidgets.QMessageBox.StandardButton.Cancel
+        actions = (
+            lambda: view.actions.open_next_image.trigger(),
+            lambda: view.actions.open_prev_image.trigger(),
+            lambda: view.playback_control.next_button.click(),
+            lambda: view.playback_control.prev_button.click(),
+            lambda: view.playback_control.seek_requested.emit(7),
+        )
+
+        for action in actions:
+            ticks["count"] = 0
+            with self._answer_modal(cancel, delay_ms=100) as state:
+                action()
+            self.assertEqual(state["seen"], 1)
+            self.assertEqual(state["clicked"], 1)
+            self.assertGreater(ticks["count"], 0)
+            self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+            self.assertTrue(view.playback_timer.isActive())
+            self.assertEqual(view._playback_display_index, 15)
+            self.assertEqual(view._playback_anchor_index, 10)
+            self.assertEqual(Path(view.filename), frames[10])
+            self.assertEqual(self._labels(view), ["edited-anchor"])
+            self.assertTrue(view.dirty)
+            self.assertEqual(self._snapshot(frames), before)
+
+    def test_real_save_dialog_discard_steps_from_the_preview(self):
+        view, frames = self._open_sequence(auto_save=False, keep_prev=True)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        view.canvas.shapes[0].label = "edited-anchor"
+        view.set_dirty()
+        discard = QtWidgets.QMessageBox.StandardButton.Discard
+
+        with self._answer_modal(discard, delay_ms=80) as state:
+            view.playback_control.next_button.click()
+
+        self.assertEqual(state["clicked"], 1)
+        self._assert_stopped_on(view, frames, 16)
+        self.assertEqual(self._labels(view), ["frame-16"])
+        anchor = json.loads(
+            frames[10].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(anchor["shapes"][0]["label"], "frame-10")
+        self.assertEqual(anchor["imagePath"], frames[10].name)
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_unchecked_navigation_uses_the_loop_preview(self):
+        view, frames = self._open_sequence(keep_prev=True, empty_indexes={16})
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 14)
+        self._mark_checked(view, [15])
+
+        view.actions.open_next_unchecked_image.trigger()
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 16)
+        self.assertEqual(self._labels(view), [])
+        target = json.loads(
+            frames[16].with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(target["shapes"], [])
+        self.assertEqual(target["imagePath"], frames[16].name)
+        self.assertEqual(self._snapshot(frames), before)
+
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        self._mark_checked(view, [14])
+        view.actions.open_prev_unchecked_image.trigger()
+        self.app.processEvents()
+
+        self._assert_stopped_on(view, frames, 13)
+        self.assertEqual(self._labels(view), ["frame-13"])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_unchecked_navigation_cancel_and_drawing_stay_on_the_preview(self):
+        view, frames = self._open_sequence(auto_save=False)
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 10)
+        self._start_loop(view, radius=5)
+        self._advance_loop_to(view, 15)
+        view.canvas.shapes[0].label = "edited-anchor"
+        view.set_dirty()
+        cancel = QtWidgets.QMessageBox.StandardButton.Cancel
+
+        with self._answer_modal(cancel, delay_ms=100) as state:
+            view.actions.open_next_unchecked_image.trigger()
+            view.actions.open_prev_unchecked_image.trigger()
+
+        self.assertEqual(state["clicked"], 2)
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertEqual(view._playback_display_index, 15)
+        self.assertEqual(self._labels(view), ["edited-anchor"])
+        self.assertTrue(view.dirty)
+        self.assertEqual(self._snapshot(frames), before)
+
+        drawing = self._open_drawing()
+        view.canvas.current = drawing
+        with self._answer_modal(cancel, delay_ms=100) as state:
+            view.actions.open_next_unchecked_image.trigger()
+            view.actions.open_prev_unchecked_image.trigger()
+        self.assertEqual(state["seen"], 0)
+        self.assertIs(view.canvas.current, drawing)
+        self.assertEqual(view._playback_mode, view.PLAYBACK_LOOP)
+        self.assertEqual(Path(view.filename), frames[10])
+        self.assertEqual(self._snapshot(frames), before)
+
+    def test_unchecked_navigation_outside_a_loop_uses_the_open_frame(self):
+        view, frames = self._open_sequence()
+        before = self._snapshot(frames)
+        self._show_frame(view, frames, 0)
+        self._mark_checked(view, [1])
+
+        view.actions.open_next_unchecked_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 2)
+        self.assertEqual(self._labels(view), ["frame-02"])
+
+        self._mark_checked(view, [1])
+        view.actions.open_prev_unchecked_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 0)
+        self.assertEqual(self._snapshot(frames), before)
+
+        self._show_frame(view, frames, 0)
+        view.toggle_sequence_playback(True)
+        view._on_playback_tick()
+        view._on_playback_tick()
+        self.assertEqual(Path(view.filename), frames[2])
+        self._mark_checked(view, [3])
+        view.actions.open_next_unchecked_image.trigger()
+        self.app.processEvents()
+        self._assert_stopped_on(view, frames, 4)
+        self.assertEqual(self._labels(view), ["frame-04"])
         self.assertEqual(self._snapshot(frames), before)
