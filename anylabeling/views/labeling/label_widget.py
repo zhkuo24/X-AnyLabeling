@@ -346,6 +346,7 @@ class LabelingWidget(LabelDialog):
         self._playback_internal_change = False
         self._playback_arming = False
         self._loading_file_depth = 0
+        self._label_save_depth = 0
         self._playback_fps = 30
         self._playback_loop_radius = 3
         self._playback_loop_indices = []
@@ -3102,18 +3103,27 @@ class LabelingWidget(LabelDialog):
 
         # Real edits autosave to the label document. During loop playback
         # that document stays the anchor frame; preview frames are not
-        # candidates. ``save_labels`` enforces the same target.
-        if self._config["auto_save"]:
+        # candidates. ``save_labels`` enforces the same target. A failed
+        # write must leave the document dirty: callers such as
+        # ``may_continue`` and ``_ensure_all_edits_saved`` treat a clean
+        # document as safe to replace from disk.
+        if self._config["auto_save"] and not getattr(
+            self, "_label_save_depth", 0
+        ):
             anchor = self._loop_anchor_filename()
             source = anchor or self.image_path
             if source:
-                self.save_labels(self._label_file_for_image(source))
+                saved = self.save_labels(self._label_file_for_image(source))
                 if (
                     hasattr(self, "navigator_dialog")
                     and self.navigator_dialog.isVisible()
                 ):
                     self.update_navigator_shapes()
-                return
+                if saved:
+                    self.dirty = False
+                    self.actions.save.setEnabled(False)
+                    self.update_progress_title()
+                    return
         self.dirty = True
         self.actions.save.setEnabled(True)
         if (
@@ -5353,6 +5363,16 @@ class LabelingWidget(LabelDialog):
         del blocker
 
     def save_labels(self, filename):
+        # The error dialog below runs a nested event loop. Playback ticks
+        # observe this depth and must not save or reload again from inside
+        # that dialog.
+        self._label_save_depth += 1
+        try:
+            return self._save_labels_impl(filename)
+        finally:
+            self._label_save_depth -= 1
+
+    def _save_labels_impl(self, filename):
         label_file = LabelFile()
         # Get current shapes
         # Excluding auto labeling special shapes
@@ -6776,7 +6796,18 @@ class LabelingWidget(LabelDialog):
 
         # Persist pending edits before starting a new loop, then clear the
         # dirty flag so stopping later does not rewrite the same file.
-        self._ensure_all_edits_saved()
+        # A failed write must not continue into the anchor reload: that
+        # reload replaces the in-memory shapes with the old file.
+        if not self._ensure_all_edits_saved():
+            self.status(
+                self.tr(
+                    "Loop playback did not start because annotations "
+                    "could not be saved"
+                ),
+                3000,
+            )
+            self._sync_playback_control()
+            return
 
         self._playback_mode = self.PLAYBACK_LOOP
         self._playback_anchor_index = anchor_index
@@ -6857,10 +6888,16 @@ class LabelingWidget(LabelDialog):
         self.canvas.adjustSize()
 
     def _stop_playback(self, restore_anchor=True):
+        # ``save_labels`` may already be inside its error dialog. Stopping
+        # from that nested tick would save again and then reload the frame
+        # the dialog is still trying to persist.
+        if getattr(self, "_label_save_depth", 0):
+            return
         previous_mode = self._playback_mode
         anchor_index = self._playback_anchor_index
+        save_failed = False
         if previous_mode == self.PLAYBACK_LOOP and self.dirty:
-            self._save_current_loop_frame_edits()
+            save_failed = not self._save_current_loop_frame_edits()
         self.playback_timer.stop()
 
         # Clear the active mode BEFORE reloading the anchor frame so the
@@ -6875,11 +6912,11 @@ class LabelingWidget(LabelDialog):
                 and anchor_index is not None
                 and 0 <= anchor_index < len(self.image_list)
             ):
-                # A modal label dialog or an open shape is still on the
-                # stack when the playback timer stops the loop. Keep that
-                # canvas and only swap the preview pixmap back to the
-                # anchor. A clean stop still reloads from disk.
-                if self._loop_has_uncommitted_geometry():
+                # Uncommitted geometry and a failed save both exist only in
+                # memory. Reloading the anchor from disk would drop them.
+                # Put the anchor image back under the shapes already on the
+                # canvas. A clean stop still reloads from disk.
+                if self._loop_has_uncommitted_geometry() or save_failed:
                     self._restore_loop_anchor_pixmap()
                 else:
                     # Return to the anchor frame with the latest saved data
@@ -6913,6 +6950,8 @@ class LabelingWidget(LabelDialog):
         )
 
     def _on_playback_tick(self):
+        if getattr(self, "_label_save_depth", 0):
+            return
         blocking_widget = (
             QtWidgets.QApplication.activeModalWidget()
             or QtWidgets.QApplication.activePopupWidget()
