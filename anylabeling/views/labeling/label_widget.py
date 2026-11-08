@@ -345,7 +345,9 @@ class LabelingWidget(LabelDialog):
         self._playback_display_index = None
         self._playback_internal_change = False
         self._playback_arming = False
+        self._playback_ticks_suspended = False
         self._loading_file_depth = 0
+        self._label_save_depth = 0
         self._playback_fps = 30
         self._playback_loop_radius = 3
         self._playback_loop_indices = []
@@ -3102,18 +3104,27 @@ class LabelingWidget(LabelDialog):
 
         # Real edits autosave to the label document. During loop playback
         # that document stays the anchor frame; preview frames are not
-        # candidates. ``save_labels`` enforces the same target.
-        if self._config["auto_save"]:
+        # candidates. ``save_labels`` enforces the same target. A failed
+        # write must leave the document dirty: callers such as
+        # ``may_continue`` and ``_ensure_all_edits_saved`` treat a clean
+        # document as safe to replace from disk.
+        if self._config["auto_save"] and not getattr(
+            self, "_label_save_depth", 0
+        ):
             anchor = self._loop_anchor_filename()
             source = anchor or self.image_path
             if source:
-                self.save_labels(self._label_file_for_image(source))
+                saved = self.save_labels(self._label_file_for_image(source))
                 if (
                     hasattr(self, "navigator_dialog")
                     and self.navigator_dialog.isVisible()
                 ):
                     self.update_navigator_shapes()
-                return
+                if saved:
+                    self.dirty = False
+                    self.actions.save.setEnabled(False)
+                    self.update_progress_title()
+                    return
         self.dirty = True
         self.actions.save.setEnabled(True)
         if (
@@ -5353,6 +5364,16 @@ class LabelingWidget(LabelDialog):
         del blocker
 
     def save_labels(self, filename):
+        # The error dialog below runs a nested event loop. Playback ticks
+        # observe this depth and must not save or reload again from inside
+        # that dialog.
+        self._label_save_depth += 1
+        try:
+            return self._save_labels_impl(filename)
+        finally:
+            self._label_save_depth -= 1
+
+    def _save_labels_impl(self, filename):
         label_file = LabelFile()
         # Get current shapes
         # Excluding auto labeling special shapes
@@ -6641,23 +6662,32 @@ class LabelingWidget(LabelDialog):
     def _confirm_playback_frame_change(self):
         if not self.dirty:
             return True
-        if not self.may_continue():
-            return False
-        if not self.dirty:
-            return True
-
-        # ``may_continue`` leaves Discard dirty until a caller actually
-        # changes documents. Playback can start without changing immediately,
-        # so restore the saved anchor now to make the discard real.
-        filename = self.filename
-        keep_previous = self._config["keep_prev"]
-        self._config["keep_prev"] = False
+        # QMessageBox runs a nested event loop. Playback ticks still arrive
+        # there, and a tick that sees the dialog stops the loop and reloads
+        # the anchor. Suspend ticks until the answer is back: Cancel must
+        # still see the same preview and the same in-memory edits.
+        self._playback_ticks_suspended = True
         try:
-            self.set_clean()
-            loaded = bool(filename and self.load_file(filename))
-            return loaded and not self.dirty
+            if not self.may_continue():
+                return False
+            if not self.dirty:
+                return True
+
+            # ``may_continue`` leaves Discard dirty until a caller actually
+            # changes documents. Playback can start without changing
+            # immediately, so restore the saved anchor now to make the
+            # discard real.
+            filename = self.filename
+            keep_previous = self._config["keep_prev"]
+            self._config["keep_prev"] = False
+            try:
+                self.set_clean()
+                loaded = bool(filename and self.load_file(filename))
+                return loaded and not self.dirty
+            finally:
+                self._config["keep_prev"] = keep_previous
         finally:
-            self._config["keep_prev"] = keep_previous
+            self._playback_ticks_suspended = False
 
     def _playback_available(self):
         if self.filename is not None and len(self.image_list) == 1:
@@ -6771,6 +6801,18 @@ class LabelingWidget(LabelDialog):
         if not self._playback_available():
             self._sync_playback_control()
             return
+        # Starting a loop reloads the anchor from disk. An open shape or
+        # brush edit exists only on the canvas, so that reload would
+        # discard it. Sequence playback already refuses this state.
+        if self.canvas.current is not None or self.canvas.is_brush_mode:
+            self.status(
+                self.tr(
+                    "Finish the current annotation before loop playback"
+                ),
+                3000,
+            )
+            self._sync_playback_control()
+            return
 
         anchor_index = self.fn_to_index.get(str(self.filename))
         if anchor_index is None:
@@ -6779,7 +6821,18 @@ class LabelingWidget(LabelDialog):
 
         # Persist pending edits before starting a new loop, then clear the
         # dirty flag so stopping later does not rewrite the same file.
-        self._ensure_all_edits_saved()
+        # A failed write must not continue into the anchor reload: that
+        # reload replaces the in-memory shapes with the old file.
+        if not self._ensure_all_edits_saved():
+            self.status(
+                self.tr(
+                    "Loop playback did not start because annotations "
+                    "could not be saved"
+                ),
+                3000,
+            )
+            self._sync_playback_control()
+            return
 
         self._playback_mode = self.PLAYBACK_LOOP
         self._playback_anchor_index = anchor_index
@@ -6831,11 +6884,45 @@ class LabelingWidget(LabelDialog):
             )
         )
 
+    def _loop_has_uncommitted_geometry(self):
+        """Return True when the canvas holds geometry the anchor file lacks.
+
+        Finishing a shape appends it before the label dialog returns, and
+        an in-progress polygon or brush edit lives only in ``canvas.current``
+        or brush state. Reloading the anchor from disk at that moment drops
+        the new geometry and lets the dialog label whatever shape was just
+        loaded instead.
+        """
+
+        canvas = self.canvas
+        if canvas.current is not None or canvas.is_brush_mode:
+            return True
+        listed_shapes = {item.shape() for item in self.label_list}
+        return any(shape not in listed_shapes for shape in canvas.shapes)
+
+    def _restore_loop_anchor_pixmap(self):
+        """Show the anchor image again without replacing canvas shapes."""
+
+        image = self.image
+        if image is None or image.isNull():
+            return
+        # Preview frames change only the canvas pixmap. ``self.image`` is
+        # still the anchor, so this puts that frame back under the shapes
+        # the label dialog is editing.
+        self.canvas.set_preview_pixmap(QtGui.QPixmap.fromImage(image))
+        self.canvas.adjustSize()
+
     def _stop_playback(self, restore_anchor=True):
+        # ``save_labels`` may already be inside its error dialog. Stopping
+        # from that nested tick would save again and then reload the frame
+        # the dialog is still trying to persist.
+        if getattr(self, "_label_save_depth", 0):
+            return
         previous_mode = self._playback_mode
         anchor_index = self._playback_anchor_index
+        save_failed = False
         if previous_mode == self.PLAYBACK_LOOP and self.dirty:
-            self._save_current_loop_frame_edits()
+            save_failed = not self._save_current_loop_frame_edits()
         self.playback_timer.stop()
 
         # Clear the active mode BEFORE reloading the anchor frame so the
@@ -6850,16 +6937,25 @@ class LabelingWidget(LabelDialog):
                 and anchor_index is not None
                 and 0 <= anchor_index < len(self.image_list)
             ):
-                # Return to the anchor frame with the latest saved data
-                # instead of a cached preview pixmap (2.5.3 behavior).
-                try:
-                    self._load_loop_anchor_frame_with_latest_data()
-                except Exception:
-                    # Keep the state machine consistent even if the anchor
-                    # frame cannot be reloaded (e.g. an undecodable frame).
-                    logger.error(
-                        "Failed to return to the anchor frame after playback"
-                    )
+                # Uncommitted geometry and a failed save both exist only in
+                # memory. Reloading the anchor from disk would drop them.
+                # Put the anchor image back under the shapes already on the
+                # canvas. A clean stop still reloads from disk.
+                if self._loop_has_uncommitted_geometry() or save_failed:
+                    self._restore_loop_anchor_pixmap()
+                else:
+                    # Return to the anchor frame with the latest saved data
+                    # instead of a cached preview pixmap (2.5.3 behavior).
+                    try:
+                        self._load_loop_anchor_frame_with_latest_data()
+                    except Exception:
+                        # Keep the state machine consistent even if the
+                        # anchor frame cannot be reloaded (e.g. an
+                        # undecodable frame).
+                        logger.error(
+                            "Failed to return to the anchor frame after "
+                            "playback"
+                        )
                 self._playback_display_index = anchor_index
         finally:
             self._playback_internal_change = False
@@ -6879,6 +6975,10 @@ class LabelingWidget(LabelDialog):
         )
 
     def _on_playback_tick(self):
+        if getattr(self, "_playback_ticks_suspended", False):
+            return
+        if getattr(self, "_label_save_depth", 0):
+            return
         blocking_widget = (
             QtWidgets.QApplication.activeModalWidget()
             or QtWidgets.QApplication.activePopupWidget()
@@ -7083,35 +7183,96 @@ class LabelingWidget(LabelDialog):
         finally:
             self._config["keep_prev"] = keep_previous
 
+    def _playback_navigation_blocked(self):
+        """Refuse loop navigation while a shape or brush stroke is open.
+
+        A save dialog runs a nested event loop. The playback timer still
+        fires there, sees the dialog, and ``_stop_playback`` reloads the
+        anchor. That reload drops ``canvas.current`` and brush mode before
+        Cancel can keep them, so this path never opens a dialog.
+        """
+
+        if self._playback_mode != self.PLAYBACK_LOOP:
+            return False
+        canvas = self.canvas
+        if canvas.current is None and not canvas.is_brush_mode:
+            return False
+        self.status(
+            self.tr("Finish the current annotation before changing frames"),
+            3000,
+        )
+        self._sync_playback_control()
+        return True
+
+    def _accept_playback_navigation(self):
+        """Ask before leaving unsaved loop edits.
+
+        An in-progress shape or brush stroke blocks navigation before any
+        dialog. Committed dirty edits use the normal save prompt. Cancel
+        leaves the loop, the preview frame, and the in-memory edits in place.
+        """
+
+        if self._playback_navigation_blocked():
+            return False
+        if not self._confirm_playback_frame_change():
+            self._sync_playback_control()
+            return False
+        return True
+
     def _playback_step(self, offset):
-        if self._playback_mode is not None:
-            self._stop_playback()
-        if not self.image_list or not self._confirm_playback_frame_change():
+        # Loop preview does not change ``filename``. Stopping restores the
+        # anchor document, so the baseline has to be the frame on screen
+        # before that restore. Sequence playback and an idle document
+        # already keep ``filename`` on the frame being shown.
+        stepping_from_loop = self._playback_mode == self.PLAYBACK_LOOP
+        displayed_index = (
+            self._playback_display_index if stepping_from_loop else None
+        )
+        if not self.image_list or not self._accept_playback_navigation():
             self._sync_playback_control()
             return
-        current_index = self.fn_to_index.get(
-            str(self.filename), self.file_list_widget.currentRow()
-        )
+        if self._playback_mode is not None:
+            self._stop_playback()
+        if isinstance(displayed_index, int):
+            current_index = displayed_index
+        else:
+            current_index = self.fn_to_index.get(
+                str(self.filename), self.file_list_widget.currentRow()
+            )
         target_index = min(
             max(0, current_index + int(offset)), len(self.image_list) - 1
         )
-        if target_index != current_index:
-            self._load_playback_frame(target_index)
+        open_index = self.fn_to_index.get(
+            str(self.filename), self.file_list_widget.currentRow()
+        )
+        if target_index != open_index:
+            # The anchor shapes are on the canvas after a loop stops.
+            # ``keep_prev`` would copy them onto an empty destination and
+            # autosave that file. Sequence loads already suppress this.
+            self._load_playback_frame(
+                target_index, for_sequence=stepping_from_loop
+            )
         else:
-            self._sync_playback_control(current_index)
+            self._sync_playback_control(open_index)
 
     def _playback_seek(self, frame_index):
-        if self._playback_mode is not None:
-            self._stop_playback()
-        if not self.image_list or not self._confirm_playback_frame_change():
+        seeking_from_loop = self._playback_mode == self.PLAYBACK_LOOP
+        if not self.image_list or not self._accept_playback_navigation():
             self._sync_playback_control()
             return
+        if self._playback_mode is not None:
+            self._stop_playback()
         frame_index = min(max(0, int(frame_index)), len(self.image_list) - 1)
         current_index = self.fn_to_index.get(
             str(self.filename), self.file_list_widget.currentRow()
         )
         if frame_index != current_index:
-            self._load_playback_frame(frame_index)
+            # Leaving a loop puts the anchor shapes back on the canvas.
+            # ``keep_prev`` would write them into an empty target. Idle
+            # seeks keep the configured ``keep_prev`` behavior.
+            self._load_playback_frame(
+                frame_index, for_sequence=seeking_from_loop
+            )
         else:
             self._sync_playback_control(current_index)
 
@@ -7145,49 +7306,82 @@ class LabelingWidget(LabelDialog):
     def load_recent_dir(self, dirpath):
         self.import_image_folder(dirpath)
 
-    def open_prev_unchecked_image(self):
-        if self._playback_mode is not None:
-            self._stop_playback()
+    def _unchecked_target_index(self, direction, origin):
+        if direction > 0:
+            indexes = range(origin + 1, len(self.image_list))
+        else:
+            indexes = range(origin - 1, -1, -1)
+        for index in indexes:
+            item = self.file_list_widget.item(index)
+            if item is None:
+                continue
+            if not self._file_item_annotation_checked(item):
+                return index
+        return None
+
+    def _open_unchecked_image(self, direction):
+        """Open the next or previous unchecked frame.
+
+        During a loop the search starts at the preview frame, not the
+        anchor ``filename``. There is nothing to open when no unchecked
+        frame remains, so the loop stays where it is. Leaving a loop
+        suppresses ``keep_prev`` for that one load.
+        """
+
+        in_playback = (
+            self._playback_mode is not None
+            and not self._playback_internal_change
+        )
+        if in_playback:
+            from_loop = self._playback_mode == self.PLAYBACK_LOOP
+            if from_loop:
+                origin = self._playback_display_index
+            else:
+                origin = self.fn_to_index.get(str(self.filename))
+            if not isinstance(origin, int):
+                return
+            target = self._unchecked_target_index(direction, origin)
+            if target is None:
+                return
+            if not self._accept_playback_navigation():
+                return
+            if self._playback_mode is not None:
+                self._stop_playback()
+            self._load_playback_frame(target, for_sequence=from_loop)
+            return
+
         if (
             not self.may_continue()
             or len(self.image_list) <= 0
             or self.filename is None
         ):
             return
+        origin = self.fn_to_index.get(str(self.filename))
+        if not isinstance(origin, int):
+            return
+        target = self._unchecked_target_index(direction, origin)
+        if target is None:
+            return
+        filename = self.image_list[target]
+        if filename:
+            self.load_file(filename)
 
-        current_index = self.fn_to_index[str(self.filename)]
-        for i in range(current_index - 1, -1, -1):
-            if not self._file_item_annotation_checked(
-                self.file_list_widget.item(i)
-            ):
-                filename = self.image_list[i]
-                if filename:
-                    self.load_file(filename)
-                break
+    def open_prev_unchecked_image(self):
+        self._open_unchecked_image(-1)
 
     def open_next_unchecked_image(self, _value=False):
-        if self._playback_mode is not None:
-            self._stop_playback()
-        if (
-            not self.may_continue()
-            or len(self.image_list) <= 0
-            or self.filename is None
-        ):
-            return
-
-        current_index = self.fn_to_index[str(self.filename)]
-        for i in range(current_index + 1, len(self.image_list)):
-            if not self._file_item_annotation_checked(
-                self.file_list_widget.item(i)
-            ):
-                filename = self.image_list[i]
-                if filename:
-                    self.load_file(filename)
-                break
+        self._open_unchecked_image(1)
 
     def open_prev_image(self, _value=False):
-        if self._playback_mode is not None:
-            self._stop_playback()
+        # Keyboard prev/next share the playback-bar baseline. Stopping
+        # first would put ``filename`` back on the loop anchor and then
+        # step away from that anchor instead of the preview.
+        if (
+            self._playback_mode is not None
+            and not self._playback_internal_change
+        ):
+            self._playback_step(-1)
+            return
         if not self.may_continue():
             return
         if self.file_list_widget.count() <= 0:
@@ -7205,7 +7399,8 @@ class LabelingWidget(LabelDialog):
             self._playback_mode is not None
             and not self._playback_internal_change
         ):
-            self._stop_playback()
+            self._playback_step(1)
+            return
         if not self.may_continue():
             return
         count = self.file_list_widget.count()
