@@ -9,6 +9,10 @@ from unittest import mock
 from PIL import Image
 
 from anylabeling.views.labeling import label_file
+from tests.test_labeling.label_write_lock import (
+    allow_label_writes,
+    deny_label_writes,
+)
 
 
 class TestLabelFileSave(unittest.TestCase):
@@ -71,6 +75,30 @@ class TestLabelFileSave(unittest.TestCase):
                 self.assertEqual(f.read(), original_data)
             self.assertEqual(os.listdir(directory), ["annotation.json"])
             self.assertIsNone(label.filename)
+
+    def test_platform_write_block_raises_and_keeps_the_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filename = os.path.join(directory, "annotation.json")
+            original_data = '{"original": true}\n'
+            with open(filename, "w", encoding="utf-8") as handle:
+                handle.write(original_data)
+
+            deny_label_writes(directory)
+            try:
+                label = label_file.LabelFile()
+                with self.assertRaises(label_file.LabelFileError):
+                    label.save(
+                        filename=filename,
+                        shapes=[],
+                        image_path="image.jpg",
+                        image_height=1,
+                        image_width=1,
+                    )
+                with open(filename, "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), original_data)
+                self.assertIsNone(label.filename)
+            finally:
+                allow_label_writes(directory)
 
 
 if __name__ == "__main__":

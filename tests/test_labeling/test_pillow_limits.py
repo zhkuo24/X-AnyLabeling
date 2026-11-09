@@ -19,10 +19,23 @@ from anylabeling.views.labeling import label_file
 class TestPillowLimits(unittest.TestCase):
 
     def test_label_file_import_preserves_pillow_pixel_limit(self):
-        with mock.patch.object(Image, "MAX_IMAGE_PIXELS", 1):
-            importlib.reload(label_file)
+        # reload() rebinds LabelFile and LabelFileError in this module's
+        # dict. LabelingWidget keeps the objects from its first import, so
+        # a later save raises the new class and ``except LabelFileError``
+        # does not match. Put the previous module back after the assertion.
+        snapshot = dict(label_file.__dict__)
+        try:
+            with mock.patch.object(Image, "MAX_IMAGE_PIXELS", 1):
+                importlib.reload(label_file)
 
-            self.assertEqual(Image.MAX_IMAGE_PIXELS, 1)
+                self.assertEqual(Image.MAX_IMAGE_PIXELS, 1)
+        finally:
+            reloaded = [
+                key for key in list(label_file.__dict__) if key not in snapshot
+            ]
+            for key in reloaded:
+                del label_file.__dict__[key]
+            label_file.__dict__.update(snapshot)
 
     def test_label_file_rejects_decompression_bomb(self):
         image_buffer = io.BytesIO()

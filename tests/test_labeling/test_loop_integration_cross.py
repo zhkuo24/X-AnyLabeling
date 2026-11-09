@@ -18,6 +18,7 @@ try:
     from anylabeling.resources import resources  # noqa: F401
     from anylabeling.views.labeling.shape import Shape
     from anylabeling.views.mainwindow import MainWindow
+    from tests.test_labeling.label_write_lock import deny_label_writes
 
     PYQT_AVAILABLE = True
 except Exception:
@@ -368,7 +369,7 @@ class TestLoopIntegrationCross(unittest.TestCase):
         shape = view.canvas.shapes[0]
         shape.label = "unsaved-anchor"
         view.set_dirty()
-        os.chmod(frames[0].parent, 0o555)
+        deny_label_writes(frames[0].parent)
 
         self._close_save_error(view, lambda: view.toggle_loop_playback(False))
 
