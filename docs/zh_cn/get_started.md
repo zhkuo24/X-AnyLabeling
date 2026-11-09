@@ -272,6 +272,8 @@ set PYTHONPATH=C:\path\to\X-AnyLabeling
 #### 1.2.3 GUI 安装包
 
 > **下载链接**: [GitHub Releases](https://github.com/CVHub520/X-AnyLabeling/releases)
+>
+> 本仓库的滚动安装包在 [Windows 最新构建](https://github.com/zhkuo24/X-AnyLabeling/releases/tag/windows-latest) 和 [macOS 最新构建](https://github.com/zhkuo24/X-AnyLabeling/releases/tag/macos-latest)。文件名是 `X-AnyLabeling-v<应用版本>-<8位源码SHA>-Windows-x64-CPU.exe` 或 `X-AnyLabeling-v<应用版本>-<8位源码SHA>-macOS-arm64-unsigned.zip`。应用版本不会随每次提交自动变化；8 位 SHA 用来区分同一版本的不同源码构建。旁边的 `.sha256` 内容为 `<64位校验和>  <安装包文件名>`。标签地址保持不变，附件文件名会随源码变化。旧的固定文件名 `X-AnyLabeling-Windows-x64-CPU.exe` 和 `X-AnyLabeling-macOS-arm64-unsigned.zip` 不再上传。
 
 相比于从源代码运行，GUI 安装包提供了更便捷的使用体验，用户无需深入了解底层实现，只需解压即可直接使用。然而，GUI 安装包也存在一些局限性：
 

@@ -7,6 +7,7 @@ on:
       - "anylabeling/**"
       - "packaging/pyinstaller/**"
       - "scripts/build_executable.sh"
+      - "scripts/release_names.py"
       - "tests/**"
       - "pyproject.toml"
       - ".github/workflows/windows-build.yml"
@@ -26,6 +27,7 @@ jobs:
     timeout-minutes: 60
     env:
       QT_QPA_PLATFORM: offscreen
+      X_ANYLABELING_SOURCE: ${{ github.sha }}
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -54,14 +56,20 @@ jobs:
         shell: bash
         run: bash scripts/build_executable.sh win-cpu
 
+      - name: Name Windows package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset=$(python scripts/release_names.py windows-cpu-exe --source "$X_ANYLABELING_SOURCE")
+          test -f "dist/${asset}"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
       - name: Verify executable and write checksum
         shell: pwsh
         run: |
-          $executables = @(Get-ChildItem dist/X-AnyLabeling-v*-CPU.exe)
-          if ($executables.Count -ne 1) {
-            throw "Expected exactly one Windows CPU executable."
-          }
-          $exe = $executables[0]
+          $asset = "${{ steps.package.outputs.asset }}"
+          $exe = Get-Item "dist/$asset"
           $process = Start-Process -FilePath $exe.FullName -ArgumentList "version" -PassThru
           if (-not $process.WaitForExit(120000)) {
             $process.Kill()
@@ -71,15 +79,16 @@ jobs:
             throw "Executable version check failed: $($process.ExitCode)"
           }
           $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($exe.Name)" | Set-Content "$($exe.FullName).sha256" -Encoding ascii
+          $line = python scripts/release_names.py format-checksum --asset $asset --digest $hash
+          [System.IO.File]::WriteAllText("$($exe.FullName).sha256", ($line.Trim() + "`n"))
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v7
         with:
-          name: X-AnyLabeling-Windows-x64-CPU
+          name: ${{ steps.package.outputs.asset }}
           path: |
-            dist/X-AnyLabeling-v*-CPU.exe
-            dist/X-AnyLabeling-v*-CPU.exe.sha256
+            dist/${{ steps.package.outputs.asset }}
+            dist/${{ steps.package.outputs.asset }}.sha256
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
