@@ -18,6 +18,10 @@ try:
     from anylabeling.views.labeling.label_file import LabelFile
     from anylabeling.views.labeling.shape import Shape
     from anylabeling.views.mainwindow import MainWindow
+    from tests.test_labeling.label_write_lock import (
+        allow_label_writes,
+        deny_label_writes,
+    )
 
     PYQT_AVAILABLE = True
 except Exception:
@@ -149,10 +153,10 @@ class TestSaveFailureDirty(unittest.TestCase):
         return shape
 
     def _lock(self, frames):
-        os.chmod(frames[0].parent, 0o555)
+        deny_label_writes(frames[0].parent)
 
     def _unlock(self, frames):
-        os.chmod(frames[0].parent, 0o755)
+        allow_label_writes(frames[0].parent)
 
     def _run_while_closing_save_errors(
         self, view, action, require_modal_tick=False
@@ -451,8 +455,8 @@ class TestSaveFailureDirty(unittest.TestCase):
         self.assertIs(view.canvas.shapes[-1], shape)
         self.assertTrue(view.dirty)
 
-        # An explicit stop still tries to save. The locked directory fails
-        # that write, and the shapes stay in memory instead of being reloaded.
+        # An explicit stop still tries to save. The blocked label write
+        # fails, and the shapes stay in memory instead of being reloaded.
         calls_before = self._save_calls
         self._run_while_closing_save_errors(
             view,
