@@ -45,32 +45,29 @@ jobs:
           echo "run_id=$(jq -er '.id' build.json)" >> "$GITHUB_OUTPUT"
           echo "sha=$(jq -er '.head_sha' build.json)" >> "$GITHUB_OUTPUT"
 
+      - name: Check out the built source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+
       - name: Download and verify the Apple Silicon build
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
           mkdir -p release-assets
           for arch in arm64; do
-            gh run download "$SOURCE_RUN_ID" \
-              --name "X-AnyLabeling-macOS-${arch}" --dir "incoming/${arch}"
-            archives=(incoming/"${arch}"/*-"${arch}"-unsigned.zip)
-            if [ "${#archives[@]}" -ne 1 ]; then
-              echo "Expected exactly one verified macOS ${arch} archive." >&2
-              exit 1
-            fi
-            archive="${archives[0]}"
-            expected=$(awk '{print $1}' "${archive}.sha256")
-            actual=$(sha256sum "$archive" | cut -d ' ' -f 1)
+            asset=$(python3 scripts/release_names.py macos-zip --source "$SOURCE_SHA" --arch "$arch")
+            gh run download "$SOURCE_RUN_ID" --name "$asset" --dir "incoming/${arch}"
+            python3 scripts/release_names.py verify-checksum \
+              --asset "incoming/${arch}/${asset}" \
+              --checksum "incoming/${arch}/${asset}.sha256"
+            expected=$(awk '{print $1}' "incoming/${arch}/${asset}.sha256")
+            actual=$(sha256sum "incoming/${arch}/${asset}" | cut -d ' ' -f 1)
             test "$expected" = "$actual"
-            asset="X-AnyLabeling-macOS-${arch}-unsigned.zip"
-            cp "$archive" "release-assets/${asset}"
-            (
-              cd release-assets
-              sha256sum "$asset" > "${asset}.sha256"
-            )
+            cp "incoming/${arch}/${asset}" "incoming/${arch}/${asset}.sha256" release-assets/
           done
 
       - name: Publish a single rolling macOS release
@@ -80,6 +77,9 @@ jobs:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
+          version=$(python3 scripts/release_names.py app-version)
+          short=$(python3 scripts/release_names.py short-sha --source "$SOURCE_SHA")
+          asset=$(python3 scripts/release_names.py macos-zip --source "$SOURCE_SHA" --arch arm64)
           cat > release-notes.md <<EOF
           macOS M 系列芯片最新构建。下载 ZIP，解压后将 .app 拖入“应用程序”。
 
@@ -87,12 +87,15 @@ jobs:
           - 程序包未经 Apple Developer ID 签名和公证。
           - 首次打开若被系统拦截，请在“系统设置 → 隐私与安全性”中确认允许打开。
 
-          此预发布条目持续更新，只保留 M 系列最新程序包；下载链接保持不变。
+          应用显示版本是源码中的 \`${version}\`，不会随每次提交自动改号。ZIP 文件名同时带这个版本和源码提交前 8 位 \`${short}\`。压缩包里的 .app 仍只带应用版本，不带提交号。
 
+          此预发布条目持续更新，只保留这一次构建的 ZIP 和 .sha256。发布标签 \`${RELEASE_TAG}\` 不变。以前的固定文件名 \`X-AnyLabeling-macOS-arm64-unsigned.zip\` 不再上传，保存过的旧直接下载地址会失效。
+
+          - 安装包：\`${asset}\`
           - 源码提交：[$SOURCE_SHA](https://github.com/${GH_REPO}/commit/${SOURCE_SHA})
           - 构建记录：[macOS 构建](https://github.com/${GH_REPO}/actions/runs/${SOURCE_RUN_ID})
           - 已通过回归测试、应用结构和签名完整性检查，以及解压后的版本启动检查。
-          - .sha256 附件用于校验下载完整性。
+          - .sha256 的内容是 \`<校验和>  ${asset}\`。
           EOF
 
           if gh api "repos/${GH_REPO}/releases/tags/${RELEASE_TAG}" > release.json 2>/dev/null; then
@@ -111,10 +114,14 @@ jobs:
               --target "$SOURCE_SHA" --title "macOS 最新构建（M 系列）" \
               --notes-file release-notes.md --prerelease --latest=false
           fi
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > published-assets.txt
+          while IFS= read -r name; do
+            if [ -n "$name" ] && [ "$name" != "$asset" ] && [ "$name" != "${asset}.sha256" ]; then
+              gh release delete-asset "$RELEASE_TAG" "$name" --yes
+            fi
+          done < published-assets.txt
           {
             echo "### macOS 最新下载"
             echo "[Release](https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG})"
-            for arch in arm64; do
-              echo "[下载 ${arch}](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/X-AnyLabeling-macOS-${arch}-unsigned.zip)"
-            done
+            echo "[下载 arm64](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/${asset})"
           } >> "$GITHUB_STEP_SUMMARY"

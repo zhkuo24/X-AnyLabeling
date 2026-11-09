@@ -45,30 +45,28 @@ jobs:
           echo "run_id=$(jq -er '.id' build.json)" >> "$GITHUB_OUTPUT"
           echo "sha=$(jq -er '.head_sha' build.json)" >> "$GITHUB_OUTPUT"
 
+      - name: Check out the built source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+
       - name: Download and verify the existing executable
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
-          gh run download "$SOURCE_RUN_ID" \
-            --name X-AnyLabeling-Windows-x64-CPU --dir incoming
-          shopt -s nullglob
-          executables=(incoming/X-AnyLabeling-v*-CPU.exe)
-          if [ "${#executables[@]}" -ne 1 ]; then
-            echo "Expected exactly one verified Windows CPU executable." >&2
-            exit 1
-          fi
-          executable="${executables[0]}"
-          expected=$(awk '{print $1}' "${executable}.sha256")
-          actual=$(sha256sum "$executable" | cut -d ' ' -f 1)
+          asset=$(python3 scripts/release_names.py windows-cpu-exe --source "$SOURCE_SHA")
+          gh run download "$SOURCE_RUN_ID" --name "$asset" --dir incoming
+          python3 scripts/release_names.py verify-checksum \
+            --asset "incoming/${asset}" \
+            --checksum "incoming/${asset}.sha256"
+          expected=$(awk '{print $1}' "incoming/${asset}.sha256")
+          actual=$(sha256sum "incoming/${asset}" | cut -d ' ' -f 1)
           test "$expected" = "$actual"
           mkdir -p release-assets
-          cp "$executable" release-assets/X-AnyLabeling-Windows-x64-CPU.exe
-          (
-            cd release-assets
-            sha256sum X-AnyLabeling-Windows-x64-CPU.exe > X-AnyLabeling-Windows-x64-CPU.exe.sha256
-          )
+          cp "incoming/${asset}" "incoming/${asset}.sha256" release-assets/
 
       - name: Publish a single rolling Windows release
         shell: bash
@@ -77,15 +75,21 @@ jobs:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
+          version=$(python3 scripts/release_names.py app-version)
+          short=$(python3 scripts/release_names.py short-sha --source "$SOURCE_SHA")
+          asset=$(python3 scripts/release_names.py windows-cpu-exe --source "$SOURCE_SHA")
           cat > release-notes.md <<EOF
-          Windows 64 位 CPU 版最新构建。下载下方的 .exe 文件即可运行。
+          Windows 64 位 CPU 版最新构建。下载下方的 .exe 即可运行。
 
-          此预发布条目持续更新，只保留最新安装包；下载链接保持不变。
+          应用显示版本是源码中的 \`${version}\`，不会随每次提交自动改号。安装包文件名同时带这个版本和源码提交前 8 位 \`${short}\`，同一应用版本的不同构建可以分开，并能回到对应提交。
 
+          此预发布条目持续更新，只保留这一次构建的安装包和 .sha256。发布标签 \`${RELEASE_TAG}\` 不变。以前的固定文件名 \`X-AnyLabeling-Windows-x64-CPU.exe\` 不再上传，保存过的旧直接下载地址会失效。
+
+          - 安装包：\`${asset}\`
           - 源码提交：[$SOURCE_SHA](https://github.com/${GH_REPO}/commit/${SOURCE_SHA})
           - 构建记录：[Windows 构建](https://github.com/${GH_REPO}/actions/runs/${SOURCE_RUN_ID})
           - 已通过标注、播放、DICOM 等回归测试及可执行文件版本检查。
-          - .sha256 附件用于校验下载完整性。
+          - .sha256 的内容是 \`<校验和>  ${asset}\`。
           EOF
 
           if gh api "repos/${GH_REPO}/releases/tags/${RELEASE_TAG}" > release.json 2>/dev/null; then
@@ -103,8 +107,14 @@ jobs:
               --target "$SOURCE_SHA" --title "Windows CPU 最新构建" \
               --notes-file release-notes.md --prerelease --latest=false
           fi
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > published-assets.txt
+          while IFS= read -r name; do
+            if [ -n "$name" ] && [ "$name" != "$asset" ] && [ "$name" != "${asset}.sha256" ]; then
+              gh release delete-asset "$RELEASE_TAG" "$name" --yes
+            fi
+          done < published-assets.txt
           {
             echo "### Windows 最新下载"
             echo "[Release](https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG})"
-            echo "[下载 EXE](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/X-AnyLabeling-Windows-x64-CPU.exe)"
+            echo "[下载 EXE](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/${asset})"
           } >> "$GITHUB_STEP_SUMMARY"

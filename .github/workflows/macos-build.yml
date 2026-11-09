@@ -7,6 +7,7 @@ on:
       - "anylabeling/**"
       - "packaging/pyinstaller/specs/x-anylabeling-macos.spec"
       - "scripts/build_executable.sh"
+      - "scripts/release_names.py"
       - "tests/**"
       - "pyproject.toml"
       - ".github/workflows/macos-build.yml"
@@ -26,6 +27,7 @@ jobs:
     timeout-minutes: 60
     env:
       QT_QPA_PLATFORM: offscreen
+      X_ANYLABELING_SOURCE: ${{ github.sha }}
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -53,22 +55,38 @@ jobs:
       - name: Build and archive application
         run: bash scripts/build_executable.sh macos
 
+      - name: Name macOS package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset=$(python scripts/release_names.py macos-zip --source "$X_ANYLABELING_SOURCE" --arch arm64)
+          test -f "dist/${asset}"
+          test -f "dist/${asset}.sha256"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
       - name: Verify archived application
         env:
           EXPECTED_ARCH: arm64
+          PACKAGE_ASSET: ${{ steps.package.outputs.asset }}
         run: |
           python - <<'PY'
           import os
           import plistlib
           import runpy
           import subprocess
+          import sys
           from pathlib import Path
 
+          sys.path.insert(0, "scripts")
+          from release_names import verify_checksum
+
           arch = os.environ["EXPECTED_ARCH"]
-          archives = list(Path("dist").glob(f"*-{arch}-unsigned.zip"))
-          if len(archives) != 1:
-              raise RuntimeError("Expected exactly one macOS archive")
-          archive = archives[0]
+          asset = os.environ["PACKAGE_ASSET"]
+          archive = Path("dist") / asset
+          if not archive.is_file():
+              raise RuntimeError(f"Missing macOS archive {asset}")
+          verify_checksum(archive, Path(f"{archive}.sha256"))
           subprocess.run(
               ["shasum", "-a", "256", "-c", archive.name + ".sha256"],
               cwd="dist", check=True,
@@ -107,10 +125,10 @@ jobs:
       - name: Upload macOS application
         uses: actions/upload-artifact@v7
         with:
-          name: X-AnyLabeling-macOS-arm64
+          name: ${{ steps.package.outputs.asset }}
           path: |
-            dist/*-arm64-unsigned.zip
-            dist/*-arm64-unsigned.zip.sha256
+            dist/${{ steps.package.outputs.asset }}
+            dist/${{ steps.package.outputs.asset }}.sha256
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

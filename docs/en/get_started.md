@@ -274,6 +274,8 @@ set PYTHONPATH=C:\path\to\X-AnyLabeling
 #### 1.2.3 GUI Installer Package
 
 > **Download Link**: [GitHub Releases](https://github.com/CVHub520/X-AnyLabeling/releases)
+>
+> Rolling packages for this repository are on the [latest Windows build](https://github.com/zhkuo24/X-AnyLabeling/releases/tag/windows-latest) and the [latest macOS build](https://github.com/zhkuo24/X-AnyLabeling/releases/tag/macos-latest). The filenames are `X-AnyLabeling-v<app-version>-<8-char-source-SHA>-Windows-x64-CPU.exe` and `X-AnyLabeling-v<app-version>-<8-char-source-SHA>-macOS-arm64-unsigned.zip`. The application version does not change on every commit; the 8-character SHA distinguishes source builds of the same version. The matching `.sha256` file contains `<64-char checksum>  <package filename>`. The release tags stay put, and the asset names change with the source. The old fixed names `X-AnyLabeling-Windows-x64-CPU.exe` and `X-AnyLabeling-macOS-arm64-unsigned.zip` are no longer uploaded.
 
 Compared to running from source code, the GUI installer package provides a more convenient user experience. Users don't need to understand the underlying implementation and can use it directly after extraction. However, the GUI installer package also has some limitations:
 

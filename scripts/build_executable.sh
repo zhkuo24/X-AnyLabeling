@@ -29,6 +29,34 @@ require_file() {
     [ -f "$1" ] || fail "Required file '$1' was not found."
 }
 
+python_cmd() {
+    if command -v python >/dev/null 2>&1; then
+        printf '%s\n' python
+    else
+        require_command python3
+        printf '%s\n' python3
+    fi
+}
+
+resolve_source_sha() {
+    if [ -n "${X_ANYLABELING_SOURCE:-}" ]; then
+        printf '%s\n' "${X_ANYLABELING_SOURCE}"
+        return
+    fi
+    require_command git
+    git -C "${ROOT_DIR}" rev-parse HEAD
+}
+
+release_name() {
+    local py kind
+
+    py=$(python_cmd)
+    kind=$1
+    shift
+    "${py}" "${ROOT_DIR}/scripts/release_names.py" "${kind}" \
+        --source "$(resolve_source_sha)" "$@"
+}
+
 build_with_spec() {
     local label device spec_path
 
@@ -45,7 +73,7 @@ build_with_spec() {
 }
 
 package_macos_release_zip() {
-    local apps app_path latest_app app_name exe_name exe_path arch_info arch zip_name zip_path sha_path
+    local apps app_path latest_app exe_name exe_path arch_info arch zip_name zip_path sha_path
 
     apps=("${DIST_DIR}"/X-AnyLabeling-v*-macOS.app)
     if [ ! -e "${apps[0]}" ]; then
@@ -60,7 +88,6 @@ package_macos_release_zip() {
     done
 
     app_path=${latest_app}
-    app_name=$(basename "${app_path}" .app)
 
     require_command ditto
     require_command file
@@ -84,7 +111,7 @@ package_macos_release_zip() {
         arch=$(uname -m)
     fi
 
-    zip_name="${app_name}-${arch}-unsigned.zip"
+    zip_name=$(release_name macos-zip --arch "${arch}")
     zip_path="${DIST_DIR}/${zip_name}"
     sha_path="${zip_path}.sha256"
 
@@ -94,16 +121,34 @@ package_macos_release_zip() {
 
     (
         cd "${DIST_DIR}"
-        shasum -a 256 "${zip_name}" > "${zip_name}.sha256"
+        digest=$(shasum -a 256 "${zip_name}" | awk '{print $1}')
+        "$(python_cmd)" "${ROOT_DIR}/scripts/release_names.py" format-checksum \
+            --asset "${zip_name}" --digest "${digest}" > "${zip_name}.sha256"
     )
 
     echo "Created release zip: ${zip_path}"
     echo "Created checksum: ${sha_path}"
 }
 
+publish_windows_cpu_executable() {
+    local py version built target
+
+    py=$(python_cmd)
+    version=$("${py}" "${ROOT_DIR}/scripts/release_names.py" app-version)
+    built="${DIST_DIR}/X-AnyLabeling-v${version}-CPU.exe"
+    target="${DIST_DIR}/$(release_name windows-cpu-exe)"
+    require_file "${built}"
+    if [ "${built}" != "${target}" ]; then
+        rm -f "${target}" "${target}.sha256"
+        mv "${built}" "${target}"
+    fi
+    echo "Windows package: ${target}"
+}
+
 case "${system}" in
     win-cpu)
         build_with_spec "Windows CPU" "CPU" "${SPEC_DIR}/x-anylabeling-win-cpu.spec"
+        publish_windows_cpu_executable
         ;;
     win-gpu)
         build_with_spec "Windows GPU" "GPU" "${SPEC_DIR}/x-anylabeling-win-gpu.spec"
