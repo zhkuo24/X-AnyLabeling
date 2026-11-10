@@ -234,6 +234,10 @@ class Canvas(
 
         # Set mask opacity options.
         self.mask_opacity = self.mask_config.get("opacity", 80)
+        # Selected contours keep their outline and vertices either way.
+        # The interior fill is separate from unselected masks and from the
+        # fill used while a new polygon is being drawn.
+        self.fill_selected = bool(self.mask_config.get("fill_selected", False))
 
         # Global opacity multiplier for labels/shapes (1.0 = fully opaque).
         # Controlled by the canvas adjustment panel's opacity slider.
@@ -1236,9 +1240,7 @@ class Canvas(
                     else shape.line_color
                 )
                 pen = QtGui.QPen(outline_color)
-                pen.setWidthF(
-                    _screen_pen_width(shape.line_width, Shape.scale)
-                )
+                pen.setWidthF(_screen_pen_width(shape.line_width, Shape.scale))
                 if getattr(shape, "difficult", False):
                     pen.setStyle(Qt.PenStyle.DashLine)
                 p.setPen(pen)
@@ -3836,8 +3838,10 @@ class Canvas(
                 ]
                 p.drawPolygon(arrow_points)
 
-        # Draw shape masks
-        if self.show_masks:
+        # Draw shape masks. Unselected interiors follow Show Masks.
+        # A selected contour is filled only when fill_selected is on, so
+        # vertex editing can leave the image uncovered.
+        if self.show_masks or self.fill_selected:
             for shape in self.shapes:
                 if not shape.visible:
                     continue
@@ -3909,30 +3913,34 @@ class Canvas(
                         )
                         mask_path.addEllipse(rectangle)
 
-                fill_color = (
-                    shape.select_line_color
-                    if shape.selected
-                    else shape.line_color
+                fill_interior = (
+                    self.fill_selected if shape.selected else self.show_masks
                 )
-                fill_color_alpha = QtGui.QColor(
-                    fill_color.red(),
-                    fill_color.green(),
-                    fill_color.blue(),
-                    self.mask_opacity,
-                )
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(fill_color_alpha)
-                p.drawPath(mask_path)
+                if fill_interior:
+                    fill_color = (
+                        shape.select_line_color
+                        if shape.selected
+                        else shape.line_color
+                    )
+                    fill_color_alpha = QtGui.QColor(
+                        fill_color.red(),
+                        fill_color.green(),
+                        fill_color.blue(),
+                        self.mask_opacity,
+                    )
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(fill_color_alpha)
+                    p.drawPath(mask_path)
 
+                if not self.show_masks:
+                    continue
                 outline_color = (
                     shape.select_line_color
                     if shape.selected
                     else shape.line_color
                 )
                 pen = QtGui.QPen(outline_color)
-                pen.setWidthF(
-                    _screen_pen_width(shape.line_width, Shape.scale)
-                )
+                pen.setWidthF(_screen_pen_width(shape.line_width, Shape.scale))
                 if shape.difficult:
                     pen.setStyle(Qt.PenStyle.DashLine)
                 p.setPen(pen)
@@ -3949,6 +3957,17 @@ class Canvas(
                     self._fill_drawing
                     and (shape.selected or shape == self.h_shape)
                     and not (self.selected_vertex() and self.moving_shape)
+                    and not (
+                        shape.selected
+                        and shape.shape_type
+                        in (
+                            "polygon",
+                            "rectangle",
+                            "rotation",
+                            "quadrilateral",
+                            "circle",
+                        )
+                    )
                 )
                 # Brush-edited shapes are drawn from their mask instead.
                 if not getattr(shape, "_brush_using_mask", False):

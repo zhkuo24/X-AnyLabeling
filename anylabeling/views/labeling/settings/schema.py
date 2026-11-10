@@ -120,6 +120,13 @@ def _settings_translation_markers() -> None:
     QCoreApplication.translate("SettingsDialog", "Default Depth Vector")
     QCoreApplication.translate("SettingsDialog", "Min Depth")
     QCoreApplication.translate("SettingsDialog", "Mask Opacity")
+    QCoreApplication.translate("SettingsDialog", "Fill Selected Shapes")
+    QCoreApplication.translate(
+        "SettingsDialog",
+        "Fill the interior of a selected polygon, rectangle, rotation, "
+        "quadrilateral, or circle. Turn this off to keep only the outline "
+        "and control points. Mask Opacity sets how strong that fill is.",
+    )
     QCoreApplication.translate("SettingsDialog", "Model Hub")
     QCoreApplication.translate("SettingsDialog", "Model download source.")
     QCoreApplication.translate("SettingsDialog", "Logger Level")
@@ -1051,6 +1058,23 @@ def _non_shortcut_fields() -> list[SettingField]:
             description=QT_TRANSLATE_NOOP(
                 SETTINGS_TRANSLATION_CONTEXT,
                 "Set the opacity used when rendering masks.",
+            ),
+        ),
+        SettingField(
+            "canvas.mask.fill_selected",
+            QT_TRANSLATE_NOOP(
+                SETTINGS_TRANSLATION_CONTEXT, "Fill Selected Shapes"
+            ),
+            "bool",
+            "Canvas",
+            "Mask",
+            "Rendering",
+            description=QT_TRANSLATE_NOOP(
+                SETTINGS_TRANSLATION_CONTEXT,
+                "Fill the interior of a selected polygon, rectangle, "
+                "rotation, quadrilateral, or circle. Turn this off to keep "
+                "only the outline and control points. Mask Opacity sets "
+                "how strong that fill is.",
             ),
         ),
         SettingField(

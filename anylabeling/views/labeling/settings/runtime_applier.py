@@ -375,10 +375,20 @@ class SettingsRuntimeApplier:
         self._widget.canvas.cuboid_min_depth = float(cuboid["min_depth"])
 
     def apply_canvas_mask(self) -> None:
-        self._widget.canvas.mask_opacity = int(
-            self._widget._config["canvas"]["mask"]["opacity"]
+        mask = self._widget._config["canvas"]["mask"]
+        canvas = self._widget.canvas
+        canvas.mask_opacity = int(mask["opacity"])
+        canvas.fill_selected = bool(mask.get("fill_selected", False))
+        action = getattr(
+            getattr(self._widget, "actions", None),
+            "fill_selected_shapes",
+            None,
         )
-        self._widget.canvas.update()
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(canvas.fill_selected)
+            action.blockSignals(False)
+        canvas.update()
 
     def apply_shape_style(self, key: str) -> None:
         shape_config = self._widget._config["shape"]
