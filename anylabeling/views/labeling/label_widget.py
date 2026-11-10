@@ -125,17 +125,14 @@ AI_FILL_COLOR = "#FF8C0032"
 # Keys are matched as substrings, so the numeric prefix ("2 管腔-yolo") and any
 # future renaming of the prefix do not have to be spelled out here.
 AI_LINE_COLORS_BY_MODEL = {
-    "-cv2b": {"管腔": "#FFD400", "外弹性膜": "#FF8C00"},  # amber / orange
-    "-nnu5f": {"管腔": "#FF5FD2", "外弹性膜": "#B94FFF"},  # pink  / purple
-    "-yolo": {
-        "管腔": "#00E5FF",
-        "外弹性膜": "#00FF9C",
-    },  # cyan  / spring green
+    "-cv2b": {"管腔": "#FFD400", "外弹性膜": "#FF8C00"},     # amber / orange
+    "-nnu5f": {"管腔": "#FF5FD2", "外弹性膜": "#B94FFF"},    # pink  / purple
+    "-yolo": {"管腔": "#00E5FF", "外弹性膜": "#00FF9C"},     # cyan  / spring green
 }
 # Used for AI labels that carry no model suffix (the older "-AI" products).
 AI_LINE_COLORS = {
-    "管腔": "#00E5FF",  # cyan  - lumen
-    "外弹性膜": "#FF8C00",  # orange - EEM
+    "管腔": "#00E5FF",   # cyan  - lumen
+    "外弹性膜": "#FF8C00",   # orange - EEM
 }
 
 
@@ -465,7 +462,9 @@ class LabelingWidget(LabelDialog):
         )
         self.file_search.returnPressed.connect(self.file_search_changed)
         self.file_search.returnPressed.connect(self.file_search.setFocus)
-        self.annotated_only_checkbox = QCheckBox(self.tr("Only annotated"))
+        self.annotated_only_checkbox = QCheckBox(
+            self.tr("Only annotated")
+        )
         self.annotated_only_checkbox.setObjectName("AnnotatedOnlyFilter")
         self.annotated_only_checkbox.setChecked(False)
         self.annotated_only_checkbox.setEnabled(False)
@@ -2674,7 +2673,9 @@ class LabelingWidget(LabelDialog):
         # Approve AI annotations button, placed right above the frame list
         # so the per-frame review flow stays close to the sequence.
         self.approve_ai_button = QPushButton(self.tr("Approve AI"))
-        self.approve_ai_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.approve_ai_button.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
         self.approve_ai_button.setIcon(utils.new_icon("check", "svg"))
         self.approve_ai_button.setIconSize(QtCore.QSize(16, 16))
         self.approve_ai_button.setStyleSheet(get_settings_button_style())
@@ -5111,9 +5112,7 @@ class LabelingWidget(LabelDialog):
         try:
             self.label_list.add_iem(label_list_item)
             if not self.unique_label_list.find_items_by_label(shape.label):
-                item = self.unique_label_list.create_item_from_label(
-                    shape.label
-                )
+                item = self.unique_label_list.create_item_from_label(shape.label)
                 self.unique_label_list.addItem(item)
                 rgb = self._get_rgb_by_label(shape.label)
                 self.unique_label_list.set_item_label(
@@ -5189,12 +5188,7 @@ class LabelingWidget(LabelDialog):
             shape.line_color = ai_color
             shape.vertex_fill_color = ai_color
             shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
-            shape.fill_color = QtGui.QColor(
-                ai_color.red(),
-                ai_color.green(),
-                ai_color.blue(),
-                LABEL_OPACITY,
-            )
+            shape.fill_color = QtGui.QColor(ai_color.red(), ai_color.green(), ai_color.blue(), LABEL_OPACITY)
             shape.select_line_color = QtGui.QColor(255, 255, 255)
             shape.select_fill_color = QtGui.QColor(
                 ai_color.red(), ai_color.green(), ai_color.blue(), 155
@@ -6391,9 +6385,7 @@ class LabelingWidget(LabelDialog):
                 for shape in self.label_file.shapes:
                     default_flags = {}
                     if self._config["label_flags"]:
-                        for pattern, keys in self._config[
-                            "label_flags"
-                        ].items():
+                        for pattern, keys in self._config["label_flags"].items():
                             if re.match(pattern, shape.label):
                                 for key in keys:
                                     default_flags[key] = False
@@ -6401,9 +6393,7 @@ class LabelingWidget(LabelDialog):
                             **default_flags,
                             **shape.flags,
                         }
-                self.load_shapes(
-                    self.label_file.shapes, update_last_label=False
-                )
+                self.load_shapes(self.label_file.shapes, update_last_label=False)
                 if self.label_file.flags is not None:
                     flags.update(self.label_file.flags)
             self.load_flags(flags)
@@ -6429,8 +6419,7 @@ class LabelingWidget(LabelDialog):
             for orientation in self.scroll_values:
                 if self.filename in self.scroll_values[orientation]:
                     self.set_scroll(
-                        orientation,
-                        self.scroll_values[orientation][self.filename],
+                        orientation, self.scroll_values[orientation][self.filename]
                     )
 
             # set brightness contrast values
@@ -6445,10 +6434,7 @@ class LabelingWidget(LabelDialog):
                 _, contrast = self.brightness_contrast_values.get(
                     self.recent_files[0], (None, None)
                 )
-            self.brightness_contrast_values[self.filename] = (
-                brightness,
-                contrast,
-            )
+            self.brightness_contrast_values[self.filename] = (brightness, contrast)
             # Always refresh the dialog's source image so the inline adjustment
             # sliders can reuse its brightness/contrast pipeline (which includes
             # 16-bit grayscale handling).
@@ -6457,9 +6443,7 @@ class LabelingWidget(LabelDialog):
             except Exception as error:
                 # Frames that Pillow cannot decode (e.g. DICOM-derived data or
                 # exotic formats) must not break the normal load pipeline.
-                logger.error(
-                    f"Failed to decode image for brightness/contrast: {error}"
-                )
+                logger.error(f"Failed to decode image for brightness/contrast: {error}")
                 pil_image = None
             if pil_image is not None:
                 self.brightness_contrast_dialog.update_image(pil_image)
@@ -6695,8 +6679,8 @@ class LabelingWidget(LabelDialog):
         target = self._loop_frame_after_radius_change(start, end)
         if target not in self._playback_loop_indices:
             target = anchor
-        self._playback_loop_current_index = self._playback_loop_indices.index(
-            target
+        self._playback_loop_current_index = (
+            self._playback_loop_indices.index(target)
         )
         if target != self._playback_display_index:
             self._playback_internal_change = True
@@ -6767,7 +6751,8 @@ class LabelingWidget(LabelDialog):
 
     def toggle_sequence_playback(self, should_play=None):
         playback_active = (
-            self._playback_mode is not None or self.playback_timer.isActive()
+            self._playback_mode is not None
+            or self.playback_timer.isActive()
         )
         if should_play is None:
             should_play = not playback_active
@@ -6856,7 +6841,9 @@ class LabelingWidget(LabelDialog):
         # discard it. Sequence playback already refuses this state.
         if self.canvas.current is not None or self.canvas.is_brush_mode:
             self.status(
-                self.tr("Finish the current annotation before loop playback"),
+                self.tr(
+                    "Finish the current annotation before loop playback"
+                ),
                 3000,
             )
             self._sync_playback_control()
@@ -7134,7 +7121,9 @@ class LabelingWidget(LabelDialog):
                 self._playback_anchor_index is not None
                 and 0 <= self._playback_anchor_index < len(self.image_list)
             ):
-                anchor_filename = self.image_list[self._playback_anchor_index]
+                anchor_filename = self.image_list[
+                    self._playback_anchor_index
+                ]
             if anchor_filename is None:
                 return False
             label_file = self._label_file_for_image(anchor_filename)
@@ -8036,7 +8025,9 @@ class LabelingWidget(LabelDialog):
             for filename, label_file in visible_entries:
                 item = self._create_file_list_item(filename, label_file)
                 self.file_list_widget.addItem(item)
-                self.fn_to_index[filename] = self.file_list_widget.count() - 1
+                self.fn_to_index[filename] = (
+                    self.file_list_widget.count() - 1
+                )
             if target_filename is not None:
                 self.file_list_widget.setCurrentRow(
                     self.fn_to_index[target_filename]
@@ -8084,7 +8075,9 @@ class LabelingWidget(LabelDialog):
             ):
                 self.load_file(target_filename)
             else:
-                self._sync_playback_control(self.fn_to_index[target_filename])
+                self._sync_playback_control(
+                    self.fn_to_index[target_filename]
+                )
                 self.update_progress_title()
 
         if visible_files and self._config.get("exif_scan_enabled", True):
@@ -8120,9 +8113,7 @@ class LabelingWidget(LabelDialog):
 
         # Tag the incoming shapes as AI-inferred so they can be visually
         # distinguished from manual annotations and later approved.
-        ai_shapes = [
-            _mark_ai_shape(shape) for shape in auto_labeling_result.shapes
-        ]
+        ai_shapes = [_mark_ai_shape(shape) for shape in auto_labeling_result.shapes]
 
         if auto_labeling_result.replace:
             # Stacking mode: keep the existing (manual) annotations, replace
