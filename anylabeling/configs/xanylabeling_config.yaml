@@ -130,6 +130,9 @@ canvas:
     min_depth: 5.0
   mask:
     opacity: 80  # transparency value (0-255), 0 is fully transparent, 255 is fully opaque
+    # Fill the interior of a selected contour. Off keeps the outline and
+    # control points; Mask Opacity above controls the fill when this is on.
+    fill_selected: false
 
 shortcuts:
   close: Ctrl+W

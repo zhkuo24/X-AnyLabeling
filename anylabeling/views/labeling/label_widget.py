@@ -1424,6 +1424,23 @@ class LabelingWidget(LabelDialog):
             enabled=True,
             auto_trigger=True,
         )
+        fill_selected_shapes = action(
+            self.tr("Fill Selected Shapes"),
+            self.set_fill_selected,
+            tip=self.tr(
+                "Fill the interior of the selected shape. "
+                "Turn off to keep the outline and control points."
+            ),
+            icon=None,
+            checkable=True,
+            checked=bool(
+                self._config.get("canvas", {})
+                .get("mask", {})
+                .get("fill_selected", False)
+            ),
+            enabled=True,
+            auto_trigger=True,
+        )
         show_texts = action(
             self.tr("Show Texts"),
             lambda x: self.set_canvas_params("show_texts", x),
@@ -2019,6 +2036,7 @@ class LabelingWidget(LabelDialog):
             set_cross_line=set_cross_line,
             show_groups=show_groups,
             show_masks=show_masks,
+            fill_selected_shapes=fill_selected_shapes,
             show_texts=show_texts,
             show_labels=show_labels,
             show_scores=show_scores,
@@ -2324,6 +2342,7 @@ class LabelingWidget(LabelDialog):
                 set_cross_line,
                 None,
                 show_masks,
+                fill_selected_shapes,
                 show_texts,
                 show_labels,
                 show_scores,
@@ -6068,6 +6087,22 @@ class LabelingWidget(LabelDialog):
         assert hasattr(self.canvas, key), f"Canvas has no attribute {key}"
         setattr(self.canvas, key, value)
         self.canvas.update()
+
+    def set_fill_selected(self, enabled):
+        """Show or hide the interior fill of a selected contour."""
+        enabled = bool(enabled)
+        mask = self._config.setdefault("canvas", {}).setdefault("mask", {})
+        mask["fill_selected"] = enabled
+        self.canvas.fill_selected = enabled
+        self.canvas.update()
+        controller = getattr(self, "_settings_controller", None)
+        if controller is None:
+            return
+        controller.update_field(
+            "canvas.mask.fill_selected",
+            enabled,
+            emit_signal=False,
+        )
 
     def open_settings_dialog(self):
         if self._settings_controller is None:

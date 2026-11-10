@@ -3096,6 +3096,16 @@ Press Enter to search.</source>
       <translation>显示掩码</translation>
     </message>
     <message>
+      <location filename="../../views/labeling/label_widget.py" line="1428" />
+      <source>Fill Selected Shapes</source>
+      <translation>选中时填充形状</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="1431" />
+      <source>Fill the interior of the selected shape. Turn off to keep the outline and control points.</source>
+      <translation>填充选中形状的内部。关闭后只保留轮廓线和控制点。</translation>
+    </message>
+    <message>
       <location filename="../../views/labeling/label_widget.py" line="1332" />
       <source>Show semi-transparent masks for shapes</source>
       <translation>显示对象的半透明掩码</translation>
@@ -5788,6 +5798,16 @@ Results have been saved to:
       <location filename="../../views/labeling/settings/schema.py" line="122" />
       <source>Mask Opacity</source>
       <translation>蒙版透明度</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="123" />
+      <source>Fill Selected Shapes</source>
+      <translation>选中时填充形状</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="124" />
+      <source>Fill the interior of a selected polygon, rectangle, rotation, quadrilateral, or circle. Turn this off to keep only the outline and control points. Mask Opacity sets how strong that fill is.</source>
+      <translation>选中多边形、矩形、旋转框、四边形或圆形时填充内部。关闭后只保留轮廓线和控制点。填充强度由蒙版透明度决定。</translation>
     </message>
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="123" />

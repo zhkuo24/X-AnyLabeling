@@ -4,6 +4,7 @@ import unittest
 try:
     from PyQt6 import QtCore
 
+    from anylabeling.config import update_dict
     from anylabeling.views.labeling.settings.controller import (
         SettingsController,
         SettingsValidationError,
@@ -418,6 +419,26 @@ class TestSettingsController(unittest.TestCase):
         self.assertEqual(controller.last_saved_keys, ["canvas.epsilon"])
         self.assertIn(("canvas.epsilon", 13.5), applied)
         self.assertEqual(len(saved), 1)
+
+    def test_fill_selected_persists_and_reloads(self):
+        self.assertFalse(
+            self.controller.get_value("canvas.mask.fill_selected")
+        )
+        changed = self.controller.update_field(
+            "canvas.mask.fill_selected", True
+        )
+        self.assertTrue(changed)
+        self.controller.flush()
+        self.assertTrue(self.saved[-1]["canvas"]["mask"]["fill_selected"])
+        self.assertIn(("canvas.mask.fill_selected", True), self.applied)
+
+        restored = copy.deepcopy(load_template_config())
+        update_dict(
+            restored,
+            {"canvas": {"mask": {"fill_selected": True}}},
+        )
+        self.assertTrue(restored["canvas"]["mask"]["fill_selected"])
+        self.assertEqual(restored["canvas"]["mask"]["opacity"], 80)
 
 
 if __name__ == "__main__":
