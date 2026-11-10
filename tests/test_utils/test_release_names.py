@@ -23,9 +23,9 @@ from release_names import (  # noqa: E402
 
 SOURCE = "04424979c417ac324f5363a9684470443df2878c"
 OTHER = "ca48816643c2074faa1e69503df33c9c51e7b146"
-VERSION = "4.0.0-beta.14"
-WINDOWS = "X-AnyLabeling-v4.0.0-beta.14-04424979-Windows-x64-CPU.exe"
-MACOS = "X-AnyLabeling-v4.0.0-beta.14-04424979-macOS-arm64-unsigned.zip"
+VERSION = "4.0.0-beta.15"
+WINDOWS = "X-AnyLabeling-v4.0.0-beta.15-04424979-Windows-x64-CPU.exe"
+MACOS = "X-AnyLabeling-v4.0.0-beta.15-04424979-macOS-arm64-unsigned.zip"
 
 
 class TestReleaseNames(unittest.TestCase):
@@ -35,6 +35,17 @@ class TestReleaseNames(unittest.TestCase):
         )
         self.assertEqual(parse_app_version(text), VERSION)
         self.assertEqual(read_app_version(ROOT), VERSION)
+        from anylabeling.app_info import __version__ as app_version
+        from anylabeling.app import __version__ as cli_version
+        from anylabeling.views.labeling.widgets.about_dialog import (
+            __version__ as about_version,
+        )
+        from anylabeling.views.mainwindow import __version__ as window_version
+
+        self.assertEqual(app_version, VERSION)
+        self.assertIs(cli_version, app_version)
+        self.assertIs(about_version, app_version)
+        self.assertIs(window_version, app_version)
 
     def test_short_sha_is_eight_lowercase_hex_digits(self):
         self.assertEqual(short_sha(SOURCE), "04424979")
