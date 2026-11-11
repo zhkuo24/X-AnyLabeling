@@ -23,9 +23,9 @@ from release_names import (  # noqa: E402
 
 SOURCE = "04424979c417ac324f5363a9684470443df2878c"
 OTHER = "ca48816643c2074faa1e69503df33c9c51e7b146"
-VERSION = "4.0.0-beta.15"
-WINDOWS = "X-AnyLabeling-v4.0.0-beta.15-04424979-Windows-x64-CPU.exe"
-MACOS = "X-AnyLabeling-v4.0.0-beta.15-04424979-macOS-arm64-unsigned.zip"
+VERSION = "4.0.0-beta.16"
+WINDOWS = "X-AnyLabeling-v4.0.0-beta.16-04424979-Windows-x64-CPU.exe"
+MACOS = "X-AnyLabeling-v4.0.0-beta.16-04424979-macOS-arm64-unsigned.zip"
 
 
 class TestReleaseNames(unittest.TestCase):

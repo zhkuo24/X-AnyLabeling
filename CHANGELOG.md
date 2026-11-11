@@ -1,5 +1,16 @@
 # X-AnyLabeling Changelog
 
+## `v4.0.0-beta.16` (Nov 11, 2026)
+
+### 🚀 New Features
+
+- Draw a selected closed contour as a one-pixel dashed line while editing. The dash stays about one logical screen pixel wide when the image is zoomed. A saved setting can switch that outline to a solid line of the same width. New installs and existing configs without the setting stay dashed.
+- Hold H while the canvas is focused to hide completed contours, control points, and their fills. Releasing H restores them. The shortcut does not change annotations or the saved visibility settings.
+
+### 🛠️ Improvements
+
+- Bump the application version to 4.0.0-beta.16.
+
 ## `v4.0.0-beta.13` (Jul 12, 2026)
 
 ### 🐛 Bug Fixes

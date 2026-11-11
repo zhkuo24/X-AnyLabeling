@@ -240,7 +240,11 @@ class SettingsRuntimeApplier:
         if key.startswith("canvas.cuboid."):
             self.apply_canvas_cuboid()
             return
-        if key == "canvas.mask.opacity":
+        if key in {
+            "canvas.mask.opacity",
+            "canvas.mask.fill_selected",
+            "canvas.mask.edit_outline_dashed",
+        }:
             self.apply_canvas_mask()
             return
         if key == "shift_auto_shape_color":
@@ -379,6 +383,9 @@ class SettingsRuntimeApplier:
         canvas = self._widget.canvas
         canvas.mask_opacity = int(mask["opacity"])
         canvas.fill_selected = bool(mask.get("fill_selected", False))
+        canvas.edit_outline_dashed = bool(
+            mask.get("edit_outline_dashed", True)
+        )
         action = getattr(
             getattr(self._widget, "actions", None),
             "fill_selected_shapes",
@@ -388,6 +395,15 @@ class SettingsRuntimeApplier:
             action.blockSignals(True)
             action.setChecked(canvas.fill_selected)
             action.blockSignals(False)
+        outline_action = getattr(
+            getattr(self._widget, "actions", None),
+            "edit_outline_dashed",
+            None,
+        )
+        if outline_action is not None:
+            outline_action.blockSignals(True)
+            outline_action.setChecked(canvas.edit_outline_dashed)
+            outline_action.blockSignals(False)
         canvas.update()
 
     def apply_shape_style(self, key: str) -> None:

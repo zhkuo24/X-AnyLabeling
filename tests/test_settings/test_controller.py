@@ -440,6 +440,34 @@ class TestSettingsController(unittest.TestCase):
         self.assertTrue(restored["canvas"]["mask"]["fill_selected"])
         self.assertEqual(restored["canvas"]["mask"]["opacity"], 80)
 
+    def test_edit_outline_defaults_dashed_and_saved_solid_wins(self):
+        self.assertTrue(
+            self.controller.get_value("canvas.mask.edit_outline_dashed")
+        )
+        changed = self.controller.update_field(
+            "canvas.mask.edit_outline_dashed", False
+        )
+        self.assertTrue(changed)
+        self.controller.flush()
+        self.assertFalse(
+            self.saved[-1]["canvas"]["mask"]["edit_outline_dashed"]
+        )
+        self.assertIn(("canvas.mask.edit_outline_dashed", False), self.applied)
+
+        missing = copy.deepcopy(load_template_config())
+        update_dict(missing, {"canvas": {"mask": {"opacity": 40}}})
+        self.assertTrue(missing["canvas"]["mask"]["edit_outline_dashed"])
+        self.assertEqual(missing["canvas"]["mask"]["opacity"], 40)
+        self.assertFalse(missing["canvas"]["mask"]["fill_selected"])
+
+        explicit = copy.deepcopy(load_template_config())
+        update_dict(
+            explicit,
+            {"canvas": {"mask": {"edit_outline_dashed": False}}},
+        )
+        self.assertFalse(explicit["canvas"]["mask"]["edit_outline_dashed"])
+        self.assertEqual(explicit["canvas"]["mask"]["opacity"], 80)
+
 
 if __name__ == "__main__":
     unittest.main()

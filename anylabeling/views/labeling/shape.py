@@ -23,6 +23,63 @@ def _screen_pen_width(line_width, scale):
     return max(1.0, float(line_width)) / max(float(scale), 1e-6)
 
 
+# One logical screen pixel. On a 2x display that is about two physical pixels.
+EDIT_OUTLINE_SCREEN_PX = 1.0
+# Dash and gap, in logical screen pixels, so zoom does not stretch the pattern.
+EDIT_OUTLINE_DASH_SCREEN = (6.0, 4.0)
+
+
+def is_selected_closed_contour(shape) -> bool:
+    """Selected closed contour that uses the thin edit outline.
+
+    Open drawings, lines, points, and cuboids keep their normal stroke.
+    """
+    if not getattr(shape, "selected", False):
+        return False
+    kind = getattr(shape, "shape_type", None)
+    points = getattr(shape, "points", None) or []
+    try:
+        closed = bool(shape.is_closed())
+    except Exception:
+        closed = False
+    labeled = getattr(shape, "label", None) is not None
+    if kind == "polygon":
+        return len(points) >= 2 and (closed or labeled)
+    if kind == "quadrilateral":
+        return len(points) == 4 and (closed or labeled)
+    if kind in ("rectangle", "rotation"):
+        if len(points) == 2:
+            return True
+        return len(points) == 4 and (closed or labeled)
+    if kind == "circle":
+        return len(points) == 2
+    return False
+
+
+def edit_outline_pen(color, scale, dashed):
+    """One-pixel pen whose dash length stays constant on screen.
+
+    Width 0 is cosmetic and drops custom dash patterns, so the width is the
+    screen pixel divided by the painter scale instead.
+    """
+    pen = QtGui.QPen(color)
+    pen.setWidthF(_screen_pen_width(EDIT_OUTLINE_SCREEN_PX, scale))
+    pen.setCapStyle(QtCore.Qt.PenCapStyle.FlatCap)
+    pen.setJoinStyle(QtCore.Qt.PenJoinStyle.BevelJoin)
+    pen.setCosmetic(False)
+    if dashed:
+        unit = EDIT_OUTLINE_SCREEN_PX
+        pen.setDashPattern(
+            [
+                EDIT_OUTLINE_DASH_SCREEN[0] / unit,
+                EDIT_OUTLINE_DASH_SCREEN[1] / unit,
+            ]
+        )
+    else:
+        pen.setStyle(QtCore.Qt.PenStyle.SolidLine)
+    return pen
+
+
 class Shape:
     """Shape data type"""
 
@@ -64,6 +121,8 @@ class Shape:
     point_size = 4
     scale = 1.5
     line_width = 2.0
+    # Selected closed contours. Canvas copies the saved setting before paint.
+    edit_outline_dashed = True
     CUBOID_FRONT_LEFT_EDGE_CENTER = 8
     CUBOID_FRONT_RIGHT_EDGE_CENTER = 9
     CUBOID_FRONT_TOP_EDGE_CENTER = 10
@@ -447,14 +506,21 @@ class Shape:
             color = (
                 self.select_line_color if self.selected else self.line_color
             )
-            pen = QtGui.QPen(color)
-            pen.setWidthF(_screen_pen_width(self.line_width, self.scale))
-            if self.difficult and self.shape_type != "point":
-                pen.setStyle(QtCore.Qt.PenStyle.DashLine)
-            # AI-inferred shapes are drawn with a dashed outline so they
-            # can be visually distinguished from manual annotations.
-            if self.attributes.get("source") == "AI":
-                pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+            if getattr(self, "_use_edit_outline", False):
+                # The edit-outline setting wins over difficult/AI dashes so
+                # an explicit solid line stays solid.
+                pen = edit_outline_pen(
+                    color, self.scale, Shape.edit_outline_dashed
+                )
+            else:
+                pen = QtGui.QPen(color)
+                pen.setWidthF(_screen_pen_width(self.line_width, self.scale))
+                if self.difficult and self.shape_type != "point":
+                    pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+                # AI-inferred shapes are drawn with a dashed outline so they
+                # can be visually distinguished from manual annotations.
+                if self.attributes.get("source") == "AI":
+                    pen.setStyle(QtCore.Qt.PenStyle.DashLine)
             painter.setPen(pen)
 
             line_path = QtGui.QPainterPath()
@@ -596,6 +662,13 @@ class Shape:
                     line_path.lineTo(self.points[0])
 
             painter.drawPath(line_path)
+            if getattr(self, "_use_edit_outline", False):
+                # Handles stay solid. The first polygon vertex is added twice,
+                # and the odd-even rule would leave a hole under a 1px stroke.
+                handle_pen = QtGui.QPen(pen)
+                handle_pen.setStyle(QtCore.Qt.PenStyle.SolidLine)
+                painter.setPen(handle_pen)
+                vrtx_path.setFillRule(QtCore.Qt.FillRule.WindingFill)
             painter.drawPath(vrtx_path)
             if self._vertex_fill_color is not None:
                 painter.fillPath(vrtx_path, self._vertex_fill_color)

@@ -1441,6 +1441,36 @@ class LabelingWidget(LabelDialog):
             enabled=True,
             auto_trigger=True,
         )
+        edit_outline_dashed = action(
+            self.tr("Dashed Edit Outline"),
+            self.set_edit_outline_dashed,
+            tip=self.tr(
+                "Draw a selected closed contour as a one-pixel dashed line. "
+                "Turn off for a one-pixel solid line."
+            ),
+            icon=None,
+            checkable=True,
+            checked=bool(
+                self._config.get("canvas", {})
+                .get("mask", {})
+                .get("edit_outline_dashed", True)
+            ),
+            enabled=True,
+            auto_trigger=True,
+        )
+        # No shortcut: the canvas handles H only while it is focused.
+        peek_image = action(
+            self.tr("Hold H to Peek at Image"),
+            self._show_peek_hint,
+            tip=self.tr(
+                "While the canvas has focus, hold H to hide completed "
+                "contours and control points. Release H to restore them. "
+                "Annotations are not changed, and text fields ignore this key."
+            ),
+            icon=None,
+            checkable=False,
+            enabled=True,
+        )
         show_texts = action(
             self.tr("Show Texts"),
             lambda x: self.set_canvas_params("show_texts", x),
@@ -2037,6 +2067,8 @@ class LabelingWidget(LabelDialog):
             show_groups=show_groups,
             show_masks=show_masks,
             fill_selected_shapes=fill_selected_shapes,
+            edit_outline_dashed=edit_outline_dashed,
+            peek_image=peek_image,
             show_texts=show_texts,
             show_labels=show_labels,
             show_scores=show_scores,
@@ -2343,6 +2375,8 @@ class LabelingWidget(LabelDialog):
                 None,
                 show_masks,
                 fill_selected_shapes,
+                edit_outline_dashed,
+                peek_image,
                 show_texts,
                 show_labels,
                 show_scores,
@@ -6103,6 +6137,37 @@ class LabelingWidget(LabelDialog):
             enabled,
             emit_signal=False,
         )
+
+    def set_edit_outline_dashed(self, enabled):
+        """Use a dashed or solid one-pixel outline on a selected contour."""
+        enabled = bool(enabled)
+        mask = self._config.setdefault("canvas", {}).setdefault("mask", {})
+        mask["edit_outline_dashed"] = enabled
+        self.canvas.edit_outline_dashed = enabled
+        self.canvas.update()
+        controller = getattr(self, "_settings_controller", None)
+        if controller is None:
+            return
+        controller.update_field(
+            "canvas.mask.edit_outline_dashed",
+            enabled,
+            emit_signal=False,
+        )
+
+    def _show_peek_hint(self, _checked=False):
+        self.status(
+            self.tr(
+                "Hold H while the canvas is focused to hide completed "
+                "contours and control points. Release H to restore them."
+            )
+        )
+
+    def changeEvent(self, event):
+        if event.type() == QtCore.QEvent.Type.WindowDeactivate:
+            canvas = getattr(self, "canvas", None)
+            if canvas is not None:
+                canvas._set_image_peek(False)
+        super().changeEvent(event)
 
     def open_settings_dialog(self):
         if self._settings_controller is None:

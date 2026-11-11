@@ -24,14 +24,14 @@ except Exception:
 class TestSettingsSchema(unittest.TestCase):
 
     def test_field_count(self):
-        self.assertEqual(len(SETTING_FIELDS), 127)
+        self.assertEqual(len(SETTING_FIELDS), 128)
 
     def test_shortcut_and_non_shortcut_count(self):
         shortcut_fields = [
             field for field in SETTING_FIELDS if field.primary == "Shortcuts"
         ]
         self.assertEqual(len(shortcut_fields), 77)
-        self.assertEqual(len(SETTING_FIELDS) - len(shortcut_fields), 50)
+        self.assertEqual(len(SETTING_FIELDS) - len(shortcut_fields), 51)
 
     def test_defaults_cover_all_keys(self):
         defaults = defaults_map()
@@ -40,6 +40,7 @@ class TestSettingsSchema(unittest.TestCase):
         self.assertEqual(defaults["canvas.brush.point_distance"], 10.0)
         self.assertEqual(defaults["canvas.brush.simplify_epsilon"], 1.0)
         self.assertFalse(defaults["canvas.mask.fill_selected"])
+        self.assertTrue(defaults["canvas.mask.edit_outline_dashed"])
 
     def test_included_and_excluded_keys(self):
         expected_keys = {
@@ -50,6 +51,7 @@ class TestSettingsSchema(unittest.TestCase):
             "shape.line_color",
             "canvas.mask.opacity",
             "canvas.mask.fill_selected",
+            "canvas.mask.edit_outline_dashed",
             "canvas.crosshair.show",
             "canvas.crosshair.width",
             "canvas.crosshair.color",
@@ -109,8 +111,9 @@ class TestSettingsSchema(unittest.TestCase):
         )
         for key in SETTINGS_SHORTCUT_KEYS_CORE:
             self.assertIn(key, [field.key for field in shortcut_fields])
-        self.assertEqual(len(canvas_fields), 22)
+        self.assertEqual(len(canvas_fields), 23)
         canvas_keys = {field.key for field in canvas_fields}
+        self.assertIn("canvas.mask.edit_outline_dashed", canvas_keys)
         self.assertIn("canvas.crosshair.show", canvas_keys)
         self.assertIn("canvas.crosshair.width", canvas_keys)
         self.assertIn("canvas.crosshair.color", canvas_keys)
