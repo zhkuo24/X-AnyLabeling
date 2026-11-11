@@ -133,6 +133,9 @@ canvas:
     # Fill the interior of a selected contour. Off keeps the outline and
     # control points; Mask Opacity above controls the fill when this is on.
     fill_selected: false
+    # Selected closed contour in edit mode. Missing values stay dashed.
+    # False switches that outline to a one-pixel solid line.
+    edit_outline_dashed: true
 
 shortcuts:
   close: Ctrl+W

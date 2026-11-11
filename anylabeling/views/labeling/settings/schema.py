@@ -127,6 +127,13 @@ def _settings_translation_markers() -> None:
         "quadrilateral, or circle. Turn this off to keep only the outline "
         "and control points. Mask Opacity sets how strong that fill is.",
     )
+    QCoreApplication.translate("SettingsDialog", "Dashed Edit Outline")
+    QCoreApplication.translate(
+        "SettingsDialog",
+        "Selected closed contours use a one-pixel dashed line. Turn this "
+        "off for a one-pixel solid line. Hold H on the canvas to hide "
+        "completed shapes. Unselected shapes keep the normal line width.",
+    )
     QCoreApplication.translate("SettingsDialog", "Model Hub")
     QCoreApplication.translate("SettingsDialog", "Model download source.")
     QCoreApplication.translate("SettingsDialog", "Logger Level")
@@ -1075,6 +1082,23 @@ def _non_shortcut_fields() -> list[SettingField]:
                 "rotation, quadrilateral, or circle. Turn this off to keep "
                 "only the outline and control points. Mask Opacity sets "
                 "how strong that fill is.",
+            ),
+        ),
+        SettingField(
+            "canvas.mask.edit_outline_dashed",
+            QT_TRANSLATE_NOOP(
+                SETTINGS_TRANSLATION_CONTEXT, "Dashed Edit Outline"
+            ),
+            "bool",
+            "Canvas",
+            "Mask",
+            "Rendering",
+            description=QT_TRANSLATE_NOOP(
+                SETTINGS_TRANSLATION_CONTEXT,
+                "Selected closed contours use a one-pixel dashed line. "
+                "Turn this off for a one-pixel solid line. Hold H on the "
+                "canvas to hide completed shapes. Unselected shapes keep "
+                "the normal line width.",
             ),
         ),
         SettingField(

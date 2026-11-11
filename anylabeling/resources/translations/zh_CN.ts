@@ -3106,6 +3106,31 @@ Press Enter to search.</source>
       <translation>填充选中形状的内部。关闭后只保留轮廓线和控制点。</translation>
     </message>
     <message>
+      <location filename="../../views/labeling/label_widget.py" line="1445" />
+      <source>Dashed Edit Outline</source>
+      <translation>编辑轮廓虚线</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="1448" />
+      <source>Draw a selected closed contour as a one-pixel dashed line. Turn off for a one-pixel solid line.</source>
+      <translation>选中的闭合轮廓用约 1 屏幕像素的虚线显示。关闭后改为同样粗细的实线。</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="1463" />
+      <source>Hold H to Peek at Image</source>
+      <translation>按住 H 查看底图</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="1466" />
+      <source>While the canvas has focus, hold H to hide completed contours and control points. Release H to restore them. Annotations are not changed, and text fields ignore this key.</source>
+      <translation>画布获得焦点时按住 H，临时隐藏已完成轮廓和控制点，松开后恢复。不会修改标注，文本框中的输入不受影响。</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/label_widget.py" line="6160" />
+      <source>Hold H while the canvas is focused to hide completed contours and control points. Release H to restore them.</source>
+      <translation>画布获得焦点时按住 H，临时隐藏已完成轮廓和控制点，松开后恢复。</translation>
+    </message>
+    <message>
       <location filename="../../views/labeling/label_widget.py" line="1332" />
       <source>Show semi-transparent masks for shapes</source>
       <translation>显示对象的半透明掩码</translation>
@@ -5808,6 +5833,16 @@ Results have been saved to:
       <location filename="../../views/labeling/settings/schema.py" line="124" />
       <source>Fill the interior of a selected polygon, rectangle, rotation, quadrilateral, or circle. Turn this off to keep only the outline and control points. Mask Opacity sets how strong that fill is.</source>
       <translation>选中多边形、矩形、旋转框、四边形或圆形时填充内部。关闭后只保留轮廓线和控制点。填充强度由蒙版透明度决定。</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="125" />
+      <source>Dashed Edit Outline</source>
+      <translation>编辑轮廓虚线</translation>
+    </message>
+    <message>
+      <location filename="../../views/labeling/settings/schema.py" line="126" />
+      <source>Selected closed contours use a one-pixel dashed line. Turn this off for a one-pixel solid line. Hold H on the canvas to hide completed shapes. Unselected shapes keep the normal line width.</source>
+      <translation>选中的闭合轮廓用约 1 屏幕像素的虚线显示。关闭后改为同样粗细的实线。画布上按住 H 可临时隐藏已完成形状。未选中的轮廓仍使用原来的线宽。</translation>
     </message>
     <message>
       <location filename="../../views/labeling/settings/schema.py" line="123" />

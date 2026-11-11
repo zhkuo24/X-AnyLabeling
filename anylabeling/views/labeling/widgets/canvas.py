@@ -14,7 +14,11 @@ from anylabeling.views.labeling.utils.colormap import label_colormap
 from anylabeling.views.labeling.utils.theme import get_theme
 
 from .. import utils
-from ..shape import Shape, _screen_pen_width
+from ..shape import (
+    Shape,
+    _screen_pen_width,
+    is_selected_closed_contour,
+)
 
 CURSOR_DEFAULT = QtCore.Qt.CursorShape.ArrowCursor
 CURSOR_POINT = QtCore.Qt.CursorShape.PointingHandCursor
@@ -147,6 +151,9 @@ class Canvas(
         self._space_panning = False
         self._space_pan_prev_point = None
         self._space_pan_suppress_until_release = False
+        # Hold-H peek. Display only; never written to the annotation or config.
+        self._image_peek = False
+        self._peek_filter_window = None
         self._vertex_erasing = False
         self._vertex_eraser_cursor_cache = None
         self.offsets = QtCore.QPointF(), QtCore.QPointF()
@@ -238,6 +245,13 @@ class Canvas(
         # The interior fill is separate from unselected masks and from the
         # fill used while a new polygon is being drawn.
         self.fill_selected = bool(self.mask_config.get("fill_selected", False))
+        # Missing key and new installs use a dashed edit outline.
+        self.edit_outline_dashed = bool(
+            self.mask_config.get("edit_outline_dashed", True)
+        )
+        # Overview and export rendering turn this off. It is not a class flag,
+        # so one canvas cannot change the line style of another render.
+        self._use_edit_outline_style = True
 
         # Global opacity multiplier for labels/shapes (1.0 = fully opaque).
         # Controlled by the canvas adjustment panel's opacity slider.
@@ -503,7 +517,67 @@ class Canvas(
     def focusOutEvent(self, _):
         """Window out of focus event"""
         self._clear_space_pan_state()
+        self._set_image_peek(False)
         self.restore_cursor()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._install_peek_filter()
+
+    def changeEvent(self, event):
+        if event.type() == QtCore.QEvent.Type.ParentChange:
+            self._install_peek_filter()
+        super().changeEvent(event)
+
+    def _install_peek_filter(self):
+        window = self.window()
+        if window is None or self._peek_filter_window is window:
+            return
+        if self._peek_filter_window is not None:
+            self._peek_filter_window.removeEventFilter(self)
+        window.installEventFilter(self)
+        self._peek_filter_window = window
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self._peek_filter_window
+            and event.type() == QtCore.QEvent.Type.WindowDeactivate
+        ):
+            self._set_image_peek(False)
+        return super().eventFilter(watched, event)
+
+    def _set_image_peek(self, enabled):
+        """Hide completed shapes while a key is held. Selection stays."""
+        enabled = bool(enabled)
+        # A brush stroke commits on mouse release. Starting peek now would
+        # swallow that release and leave the mask dirty with no undo step.
+        if enabled and self._brush_stroke_dirty:
+            return
+        if self._image_peek == enabled:
+            return
+        if enabled and self.moving_shape:
+            self.store_moving_shape()
+        if enabled and self._rotation_drag_shape is not None:
+            self._finish_rotation_handle_drag()
+        self._image_peek = enabled
+        if enabled:
+            self.h_shape = None
+            self.prev_h_shape = None
+            self.h_vertex = None
+            self.prev_h_vertex = None
+            self.h_edge = None
+            self.prev_h_edge = None
+            self.h_cuboid_face = None
+            self.prev_h_cuboid_face = None
+            self.h_rotation_shape = None
+            self.moving_shape = False
+            self._vertex_erasing = False
+            self.selected_shapes_copy = []
+        self.update()
+
+    def _peek_blocks_edit_input(self):
+        """Block edits while peeking. Drawing and space-pan still run."""
+        return self._image_peek and not self.drawing()
 
     def is_visible(self, shape):
         """Check if a shape is visible"""
@@ -1770,6 +1844,10 @@ class Canvas(
             ev.accept()
             return
 
+        if self._peek_blocks_edit_input() and not self._brush_stroke_dirty:
+            ev.accept()
+            return
+
         if self.is_brush_mode and self.editing():
             self._brush_mouse_move(ev, pos)
             return
@@ -2367,9 +2445,6 @@ class Canvas(
         self._pending_edge_point = None
         pos = self.transform_pos(ev.position())
 
-        if self.is_brush_mode and self._brush_mouse_press(ev, pos):
-            return
-
         if ev.button() == QtCore.Qt.MouseButton.LeftButton:
             if (
                 self._space_pan_suppress_until_release
@@ -2379,6 +2454,14 @@ class Canvas(
             if self._space_pressed and self._start_space_pan(ev.position()):
                 ev.accept()
                 return
+        if self._peek_blocks_edit_input():
+            ev.accept()
+            return
+
+        if self.is_brush_mode and self._brush_mouse_press(ev, pos):
+            return
+
+        if ev.button() == QtCore.Qt.MouseButton.LeftButton:
             if self.drawing():
                 if self.current:
                     self._sync_drawing_line(pos, ev.modifiers())
@@ -2633,6 +2716,12 @@ class Canvas(
             ev.accept()
             return
 
+        if self._peek_blocks_edit_input() and not (
+            self.is_brush_mode and self._brush_stroke_dirty
+        ):
+            ev.accept()
+            return
+
         if self.is_brush_mode and self._brush_mouse_release(ev):
             return
 
@@ -2712,6 +2801,9 @@ class Canvas(
             or self._space_panning
             or self._space_pan_suppress_until_release
         ):
+            ev.accept()
+            return
+        if self._peek_blocks_edit_input():
             ev.accept()
             return
 
@@ -3739,6 +3831,8 @@ class Canvas(
                 )
 
         Shape.scale = self.scale
+        if self._use_edit_outline_style:
+            Shape.edit_outline_dashed = bool(self.edit_outline_dashed)
 
         # Draw loading/waiting screen
         if self.is_loading:
@@ -3778,7 +3872,7 @@ class Canvas(
         p.setOpacity(self.shape_opacity)
 
         # Draw KIE linking
-        if self.show_linking:
+        if self.show_linking and not self._image_peek:
             pen = QtGui.QPen(QtGui.QColor("#AAAAAA"), 2, Qt.PenStyle.SolidLine)
             p.setPen(pen)
             gid2point = {}
@@ -3841,7 +3935,7 @@ class Canvas(
         # Draw shape masks. Unselected interiors follow Show Masks.
         # A selected contour is filled only when fill_selected is on, so
         # vertex editing can leave the image uncovered.
-        if self.show_masks or self.fill_selected:
+        if (self.show_masks or self.fill_selected) and not self._image_peek:
             for shape in self.shapes:
                 if not shape.visible:
                     continue
@@ -3932,7 +4026,9 @@ class Canvas(
                     p.setBrush(fill_color_alpha)
                     p.drawPath(mask_path)
 
-                if not self.show_masks:
+                if not self.show_masks or is_selected_closed_contour(shape):
+                    # Selected contours are stroked once in shape.paint so a
+                    # second outline does not fill the thin dashes.
                     continue
                 outline_color = (
                     shape.select_line_color
@@ -3949,6 +4045,8 @@ class Canvas(
 
         # Draw degrees
         for shape in self.shapes:
+            if self._image_peek:
+                break
             if (
                 shape.selected or not self._hide_backround
             ) and self.is_visible(shape):
@@ -3971,7 +4069,14 @@ class Canvas(
                 )
                 # Brush-edited shapes are drawn from their mask instead.
                 if not getattr(shape, "_brush_using_mask", False):
-                    shape.paint(p)
+                    shape._use_edit_outline = (
+                        self._use_edit_outline_style
+                        and is_selected_closed_contour(shape)
+                    )
+                    try:
+                        shape.paint(p)
+                    finally:
+                        shape._use_edit_outline = False
 
             if (
                 shape.shape_type == "rotation"
@@ -4031,12 +4136,11 @@ class Canvas(
                     p.drawPath(cp)
                     p.fillPath(cp, QtGui.QColor(255, 153, 0, 255))
 
-        self._paint_rotation_handles(p)
-
-        self._paint_groups(p)
-
-        # Draw live brush-edit overlays on top of the regular shapes.
-        self._paint_brush_overlays(p)
+        if not self._image_peek:
+            self._paint_rotation_handles(p)
+            self._paint_groups(p)
+            # Live brush overlays cover the image, so the peek hides them too.
+            self._paint_brush_overlays(p)
 
         if self.current:
             self.current.paint(p)
@@ -4059,7 +4163,7 @@ class Canvas(
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawLine(QtCore.QLineF(self.line[1], self.current.points[0]))
-        if self.selected_shapes_copy:
+        if self.selected_shapes_copy and not self._image_peek:
             for s in self.selected_shapes_copy:
                 s.paint(p)
 
@@ -4092,7 +4196,7 @@ class Canvas(
         p.setOpacity(1.0)
 
         # Draw texts
-        if self.show_texts:
+        if self.show_texts and not self._image_peek:
             text_color = "#FFFFFF"
             background_color = "#007BFF"
             p.setFont(
@@ -4154,7 +4258,7 @@ class Canvas(
                     )
 
         # Draw labels
-        if self.show_labels:
+        if self.show_labels and not self._image_peek:
             p.setFont(
                 QtGui.QFont(
                     "Arial", int(max(6.0, int(round(8.0 / Shape.scale))))
@@ -4296,7 +4400,7 @@ class Canvas(
             )
 
         # Draw attributes
-        if self.show_attributes:
+        if self.show_attributes and not self._image_peek:
             font_size = int(max(8.0, int(round(10.0 / Shape.scale))))
             font = QtGui.QFont("Arial", font_size, QtGui.QFont.Weight.Bold)
             p.setFont(font)
@@ -4527,6 +4631,7 @@ class Canvas(
         show_masks=True,
     ):
         old_shape_scale = Shape.scale
+        old_outline_dashed = Shape.edit_outline_dashed
         scratch = type(self)(parent=self.parent)
         scratch.resize(pixmap.size())
         scratch.pixmap = pixmap
@@ -4554,6 +4659,8 @@ class Canvas(
         scratch.attr_border_color = self.attr_border_color
         scratch.attr_text_color = self.attr_text_color
         scratch.visible = {shape: shape.visible for shape in scratch.shapes}
+        # Export and overview keep the shape's own line width and style.
+        scratch._use_edit_outline_style = False
 
         image = QtGui.QImage(pixmap.size(), QtGui.QImage.Format.Format_ARGB32)
         image.fill(QtCore.Qt.GlobalColor.transparent)
@@ -4564,6 +4671,9 @@ class Canvas(
         finally:
             painter.end()
             Shape.scale = old_shape_scale
+            Shape.edit_outline_dashed = old_outline_dashed
+            for shape in scratch.shapes:
+                shape._use_edit_outline = False
             scratch.deleteLater()
 
         return image
@@ -4970,6 +5080,8 @@ class Canvas(
 
     def move_by_keyboard(self, offset):
         """Move selected shapes by an offset (using keyboard)"""
+        if self._image_peek:
+            return
         if self.selected_shapes:
             group_shapes = self._active_group_shapes()
             if group_shapes and any(shape.locked for shape in group_shapes):
@@ -4982,6 +5094,8 @@ class Canvas(
 
     def rotate_by_keyboard(self, theta):
         """Rotate selected shapes by an theta (using keyboard)"""
+        if self._image_peek:
+            return
         if self.selected_shapes:
             rotating_shape = False
             for i, shape in enumerate(self.selected_shapes):
@@ -4997,6 +5111,16 @@ class Canvas(
         """Key press event"""
         modifiers = ev.modifiers()
         key = ev.key()
+        # Plain H only. Ctrl+H stays the visibility shortcut, and a focused
+        # text field never delivers this event to the canvas.
+        if (
+            key == QtCore.Qt.Key.Key_H
+            and modifiers == QtCore.Qt.KeyboardModifier.NoModifier
+            and not ev.isAutoRepeat()
+        ):
+            self._set_image_peek(True)
+            ev.accept()
+            return
         if key == QtCore.Qt.Key.Key_Space and not ev.isAutoRepeat():
             self._space_pressed = True
             self._clear_space_pan_hover_state()
@@ -5031,6 +5155,16 @@ class Canvas(
             elif modifiers == QtCore.Qt.KeyboardModifier.AltModifier:
                 self.snapping = False
         elif self.editing():
+            if self._image_peek:
+                # Ctrl+H remains the visibility shortcut. Do not accept it.
+                if (
+                    key == QtCore.Qt.Key.Key_H
+                    and modifiers & QtCore.Qt.KeyboardModifier.ControlModifier
+                ):
+                    ev.ignore()
+                    return
+                ev.accept()
+                return
             if key == QtCore.Qt.Key.Key_Escape:
                 self.deselect_shape()
                 return
@@ -5071,6 +5205,15 @@ class Canvas(
         """Key release event"""
         modifiers = ev.modifiers()
         key = ev.key()
+        if key == QtCore.Qt.Key.Key_H and not ev.isAutoRepeat():
+            was_peeking = self._image_peek
+            self._set_image_peek(False)
+            if (
+                was_peeking
+                or modifiers == QtCore.Qt.KeyboardModifier.NoModifier
+            ):
+                ev.accept()
+            return
         if key == QtCore.Qt.Key.Key_Space and not ev.isAutoRepeat():
             self._space_pressed = False
             self._space_panning = False
@@ -5163,6 +5306,7 @@ class Canvas(
 
     def load_pixmap(self, pixmap, clear_shapes=True):
         """Load pixmap"""
+        self._set_image_peek(False)
         self.cancel_brush_mode()
         self.pixmap = pixmap
         if clear_shapes:
