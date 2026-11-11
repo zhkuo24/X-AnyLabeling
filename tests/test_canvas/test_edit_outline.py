@@ -481,6 +481,242 @@ class TestEditOutline(unittest.TestCase):
         canvas.keyPressEvent(event)
         self.assertFalse(canvas._image_peek)
 
+    def test_brush_stroke_survives_h_before_and_after_release(self):
+        canvas = self._canvas(width=120, height=120)
+        shape = self._polygon(selected=True, line_width=2)
+        shape.points = [
+            QtCore.QPointF(10, 10),
+            QtCore.QPointF(50, 10),
+            QtCore.QPointF(50, 50),
+            QtCore.QPointF(10, 50),
+        ]
+        shape.close()
+        canvas.shapes = [shape]
+        canvas.selected_shapes = [shape]
+        canvas.store_shapes()
+        canvas.show()
+        self.app.processEvents()
+        canvas.set_brush_mode(True)
+        self.assertTrue(canvas.is_brush_mode)
+        undo_before = len(canvas._brush_undo_stack)
+
+        canvas.mousePressEvent(self._brush_press(QtCore.QPointF(62, 30)))
+        self.assertTrue(canvas._brush_stroke_dirty)
+        self.assertLessEqual(max(point.x() for point in shape.points), 50.5)
+        self.assertEqual(len(canvas._brush_undo_stack), undo_before)
+
+        canvas.keyPressEvent(
+            _key(
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.Qt.Key.Key_H,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        self.assertFalse(canvas._image_peek)
+        self.assertTrue(canvas._brush_stroke_dirty)
+        self.assertEqual(len(canvas._brush_undo_stack), undo_before)
+        self.assertTrue(getattr(shape, "_brush_using_mask", False))
+
+        canvas.mouseReleaseEvent(self._brush_release(QtCore.QPointF(62, 30)))
+        self.assertFalse(canvas._brush_stroke_dirty)
+        self.assertGreater(max(point.x() for point in shape.points), 55)
+        self.assertEqual(len(canvas._brush_undo_stack), undo_before + 1)
+        self.assertEqual(shape.shape_type, "polygon")
+        committed = [(point.x(), point.y()) for point in shape.points]
+
+        canvas.mouseReleaseEvent(self._brush_release(QtCore.QPointF(62, 30)))
+        self.assertEqual(len(canvas._brush_undo_stack), undo_before + 1)
+        self.assertEqual(
+            [(point.x(), point.y()) for point in shape.points], committed
+        )
+
+        canvas.keyPressEvent(
+            _key(
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.Qt.Key.Key_H,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        self.assertTrue(canvas._image_peek)
+        self.assertFalse(canvas._brush_stroke_dirty)
+        self.assertEqual(len(canvas._brush_undo_stack), undo_before + 1)
+        self.assertEqual(
+            [(point.x(), point.y()) for point in shape.points], committed
+        )
+        canvas.keyReleaseEvent(
+            _key(
+                QtCore.QEvent.Type.KeyRelease,
+                QtCore.Qt.Key.Key_H,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        self.assertFalse(canvas._image_peek)
+        self.assertEqual(
+            [(point.x(), point.y()) for point in shape.points], committed
+        )
+
+    def test_release_still_commits_when_peek_is_already_on(self):
+        canvas = self._canvas(width=120, height=120)
+        shape = self._polygon(selected=True, line_width=2)
+        shape.points = [
+            QtCore.QPointF(10, 10),
+            QtCore.QPointF(50, 10),
+            QtCore.QPointF(50, 50),
+            QtCore.QPointF(10, 50),
+        ]
+        shape.close()
+        canvas.shapes = [shape]
+        canvas.selected_shapes = [shape]
+        canvas.store_shapes()
+        canvas.show()
+        self.app.processEvents()
+        canvas.set_brush_mode(True)
+        undo_before = len(canvas._brush_undo_stack)
+        canvas.mousePressEvent(self._brush_press(QtCore.QPointF(62, 30)))
+        canvas._image_peek = True
+
+        canvas.mouseReleaseEvent(self._brush_release(QtCore.QPointF(62, 30)))
+
+        self.assertFalse(canvas._brush_stroke_dirty)
+        self.assertEqual(len(canvas._brush_undo_stack), undo_before + 1)
+        self.assertGreater(max(point.x() for point in shape.points), 55)
+        self.assertEqual(shape.shape_type, "polygon")
+
+    def test_ctrl_h_is_not_a_peek_and_still_triggers_its_shortcut(self):
+        window = QtWidgets.QWidget()
+        window.resize(240, 240)
+        canvas = Canvas(parent=window, mask={"opacity": 80})
+        canvas.setParent(window)
+        canvas.resize(240, 240)
+        self.canvases.append(canvas)
+        triggered = []
+        action = QtGui.QAction(window)
+        action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
+        action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        action.triggered.connect(lambda: triggered.append("ctrl-h"))
+        window.addAction(action)
+        window.show()
+        canvas.show()
+        canvas.setFocus()
+        self.app.processEvents()
+
+        QtTest.QTest.keyClick(
+            canvas,
+            QtCore.Qt.Key.Key_H,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        self.app.processEvents()
+        self.assertEqual(triggered, ["ctrl-h"])
+        self.assertFalse(canvas._image_peek)
+
+        canvas._set_image_peek(True)
+        press = _key(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_H,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        canvas.keyPressEvent(press)
+        self.assertFalse(press.isAccepted())
+        self.assertTrue(canvas._image_peek)
+
+        QtTest.QTest.keyClick(
+            canvas,
+            QtCore.Qt.Key.Key_H,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        self.app.processEvents()
+        self.assertEqual(triggered, ["ctrl-h", "ctrl-h"])
+        self.assertFalse(canvas._image_peek)
+        window.close()
+
+    def test_visualization_keeps_normal_strokes_for_closed_contours(self):
+        boxes = {
+            "rectangle": [(50, 50), (190, 50), (190, 150), (50, 150)],
+            "rotation": [(50, 50), (190, 50), (190, 150), (50, 150)],
+            "quadrilateral": [(50, 50), (190, 50), (190, 150), (50, 150)],
+        }
+        for kind, points in boxes.items():
+            self._assert_export_keeps_width(kind, points, circle=False)
+        self._assert_export_keeps_width(
+            "circle",
+            [(120, 100), (120, 60)],
+            circle=True,
+        )
+
+    def _assert_export_keeps_width(self, kind, points, circle):
+        canvas = self._canvas()
+        shape = Shape(label="contour", shape_type=kind)
+        shape.points = [QtCore.QPointF(x, y) for x, y in points]
+        if kind != "circle":
+            shape.close()
+        shape.line_color = QtGui.QColor(0, 0, 255)
+        shape.select_line_color = QtGui.QColor(0, 0, 255)
+        shape.line_width = 8
+        shape.point_size = 2
+        shape.selected = True
+        shape.visible = True
+        canvas.shapes = [shape]
+        canvas.selected_shapes = [shape]
+        canvas.edit_outline_dashed = True
+        before = self._snapshot(shape)
+        edited, ox, oy = self._render(canvas)
+        if circle:
+            edited_ink = self._max_blue(edited, ox, oy, 92, 108, 64, 96)
+        else:
+            _best, edited_ink = self._scan_edge(
+                edited, ox, oy, 42, 62, 80, 160
+            )
+        self.assertLessEqual(edited_ink, 4, (kind, edited_ink))
+
+        Shape.edit_outline_dashed = False
+        exported = canvas.render_visualization(
+            canvas.pixmap,
+            [shape],
+            show_labels=False,
+            show_texts=False,
+            show_masks=True,
+            show_scores=False,
+            show_groups=False,
+        )
+        if circle:
+            exported_ink = self._max_blue(exported, 0, 0, 92, 108, 64, 96)
+        else:
+            best, exported_ink = self._scan_edge(
+                exported, 0, 0, 42, 62, 80, 160
+            )
+            self.assertLessEqual(best[1], 2, (kind, best))
+        self.assertGreaterEqual(exported_ink, 6, (kind, exported_ink))
+        self.assertFalse(Shape.edit_outline_dashed)
+        self.assertFalse(getattr(shape, "_use_edit_outline", False))
+        self.assertEqual(self._snapshot(shape), before)
+        self.assertEqual(shape.line_width, 8)
+
+    def _max_blue(self, image, ox, oy, y0, y1, x0, x1):
+        best = 0
+        for y in range(y0, y1 + 1):
+            count = 0
+            for x in range(x0, x1 + 1):
+                if _is_blue(self._color(image, x, y, ox, oy)):
+                    count += 1
+            best = max(best, count)
+        return best
+
+    def _brush_press(self, pos):
+        return _mouse(
+            QtCore.QEvent.Type.MouseButtonPress,
+            pos,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+
+    def _brush_release(self, pos):
+        return _mouse(
+            QtCore.QEvent.Type.MouseButtonRelease,
+            pos,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.NoButton,
+        )
+
     def _drag_vertex(self, canvas, start, end):
         canvas.mouseMoveEvent(
             _mouse(

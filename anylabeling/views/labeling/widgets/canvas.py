@@ -249,6 +249,9 @@ class Canvas(
         self.edit_outline_dashed = bool(
             self.mask_config.get("edit_outline_dashed", True)
         )
+        # Overview and export rendering turn this off. It is not a class flag,
+        # so one canvas cannot change the line style of another render.
+        self._use_edit_outline_style = True
 
         # Global opacity multiplier for labels/shapes (1.0 = fully opaque).
         # Controlled by the canvas adjustment panel's opacity slider.
@@ -546,6 +549,10 @@ class Canvas(
     def _set_image_peek(self, enabled):
         """Hide completed shapes while a key is held. Selection stays."""
         enabled = bool(enabled)
+        # A brush stroke commits on mouse release. Starting peek now would
+        # swallow that release and leave the mask dirty with no undo step.
+        if enabled and self._brush_stroke_dirty:
+            return
         if self._image_peek == enabled:
             return
         if enabled and self.moving_shape:
@@ -1837,7 +1844,7 @@ class Canvas(
             ev.accept()
             return
 
-        if self._peek_blocks_edit_input():
+        if self._peek_blocks_edit_input() and not self._brush_stroke_dirty:
             ev.accept()
             return
 
@@ -2709,7 +2716,9 @@ class Canvas(
             ev.accept()
             return
 
-        if self._peek_blocks_edit_input():
+        if self._peek_blocks_edit_input() and not (
+            self.is_brush_mode and self._brush_stroke_dirty
+        ):
             ev.accept()
             return
 
@@ -3822,7 +3831,8 @@ class Canvas(
                 )
 
         Shape.scale = self.scale
-        Shape.edit_outline_dashed = bool(self.edit_outline_dashed)
+        if self._use_edit_outline_style:
+            Shape.edit_outline_dashed = bool(self.edit_outline_dashed)
 
         # Draw loading/waiting screen
         if self.is_loading:
@@ -4059,7 +4069,10 @@ class Canvas(
                 )
                 # Brush-edited shapes are drawn from their mask instead.
                 if not getattr(shape, "_brush_using_mask", False):
-                    shape._use_edit_outline = is_selected_closed_contour(shape)
+                    shape._use_edit_outline = (
+                        self._use_edit_outline_style
+                        and is_selected_closed_contour(shape)
+                    )
                     try:
                         shape.paint(p)
                     finally:
@@ -4618,6 +4631,7 @@ class Canvas(
         show_masks=True,
     ):
         old_shape_scale = Shape.scale
+        old_outline_dashed = Shape.edit_outline_dashed
         scratch = type(self)(parent=self.parent)
         scratch.resize(pixmap.size())
         scratch.pixmap = pixmap
@@ -4645,6 +4659,8 @@ class Canvas(
         scratch.attr_border_color = self.attr_border_color
         scratch.attr_text_color = self.attr_text_color
         scratch.visible = {shape: shape.visible for shape in scratch.shapes}
+        # Export and overview keep the shape's own line width and style.
+        scratch._use_edit_outline_style = False
 
         image = QtGui.QImage(pixmap.size(), QtGui.QImage.Format.Format_ARGB32)
         image.fill(QtCore.Qt.GlobalColor.transparent)
@@ -4655,6 +4671,9 @@ class Canvas(
         finally:
             painter.end()
             Shape.scale = old_shape_scale
+            Shape.edit_outline_dashed = old_outline_dashed
+            for shape in scratch.shapes:
+                shape._use_edit_outline = False
             scratch.deleteLater()
 
         return image
@@ -5137,6 +5156,13 @@ class Canvas(
                 self.snapping = False
         elif self.editing():
             if self._image_peek:
+                # Ctrl+H remains the visibility shortcut. Do not accept it.
+                if (
+                    key == QtCore.Qt.Key.Key_H
+                    and modifiers & QtCore.Qt.KeyboardModifier.ControlModifier
+                ):
+                    ev.ignore()
+                    return
                 ev.accept()
                 return
             if key == QtCore.Qt.Key.Key_Escape:
